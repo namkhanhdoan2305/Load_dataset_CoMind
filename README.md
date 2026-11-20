@@ -4,11 +4,11 @@ Tải bộ CoMind chọn lọc trên Colab CPU, lưu vào Google Drive hoặc ch
 
 ## Thử SGG REACT++ + YOLO trên một recording
 
-Đọc [SGG_COLAB_GUIDE.md](SGG_COLAB_GUIDE.md) để chuyển sang **REACT++ YOLO12m ONNX + tracker bbox**, chạy `python -u sgg_pipeline.py --sessions 1 --keep-videos`. Graph/tracking 5 FPS, lưu riêng tại `MyDrive/CoMind_REACTpp`, tái sử dụng video đã tải và tiếp tục được checkpoint. Model mới không chạy SAM2/DINO/RelateAnything. Xem [kiểm chứng](REACTPP_VALIDATION.md). Hai graph/transcript giữ quy ước thời gian cũ. Gaze/hand được ghép từ clock MP4 có kiểm chứng anchor VRS và hash CSV; xem [SENSOR_SYNC.md](SENSOR_SYNC.md). Task progress và nhãn belief chưa tự sinh.
+Đọc [SGG_COLAB_GUIDE.md](SGG_COLAB_GUIDE.md) để chuyển sang **REACT++ YOLO12m ONNX + tracker bbox**, chạy `python -u sgg_pipeline.py --sessions 1 --keep-videos`. Graph/tracking 5 FPS, lưu riêng tại `MyDrive/CoMind_REACTpp`, tái sử dụng video đã tải và tiếp tục được checkpoint. Model mới không chạy SAM2/DINO/RelateAnything. Xem [kiểm chứng](REACTPP_VALIDATION.md) và [review đủ sáu nhóm](DATA_REVIEW.md). Hai graph/transcript giữ quy ước thời gian cũ. Gaze/hand được ghép từ clock MP4 có kiểm chứng anchor VRS và hash CSV; xem [SENSOR_SYNC.md](SENSOR_SYNC.md). Task progress và nhãn belief chưa tự sinh.
 
 Sau khi hoàn tất mỗi recording, `belief_inputs/steps.jsonl.gz` và `speech_events.json` cung cấp các bước tuần tự để xây dựng encoder belief. Sự kiện lời nói hoàn tất được phát một lần, có ID và thời điểm, giữ ngữ cảnh 10 giây bằng tham chiếu. Nhãn belief được gán riêng; xem hướng dẫn về `belief_data.iter_training_steps` để đọc dữ liệu và nhãn.
 
-Mốc graph dùng `clock_id`, `time_us` số nguyên trên lưới 200000 us và `source_pts_us` từ decoder. PTS hoặc clock sai sẽ gây dừng. `all_modalities_aligned` chỉ lên true khi clock MPS được kiểm chứng, đủ hai CSV/transcript và graph qua kiểm tra PTS. Mẫu thiếu/quá cũ/pose không hợp lệ vẫn có mask riêng. Kiểm chứng audio/video vật lý và biến đổi tọa độ 3D là các vấn đề riêng.
+Mốc graph dùng `clock_id`, `time_us` số nguyên trên lưới 200000 us và `source_pts_us` từ decoder. PTS hoặc clock sai sẽ gây dừng. `timed_model_inputs_aligned` kiểm tra clock MPS, đủ hai CSV, transcript đúng hash/bounds và graph qua PTS. `all_modalities_aligned` còn yêu cầu annotation benchmark đã chuẩn hóa timing đầy đủ. Mẫu thiếu/quá cũ/pose không hợp lệ vẫn có mask riêng. Kiểm chứng audio/video vật lý và biến đổi tọa độ 3D là các vấn đề riêng.
 
 ## Tải trước 30 phiên vào Google Drive
 

@@ -60,9 +60,9 @@ def make_plan(ids, base_url=source.DEFAULT_BASE_URL, calibration=False,
             raise ValueError(f"Invalid recording ID: {rid!r}")
         man = retry(lambda: source.fetch_manifest(base_url, rid, 60))
         paths = [entry["path"] for entry in man["files"]]
-        missing = [name for name, pats in GROUPS.items()
-                   if not any(fnmatch.fnmatchcase(path, p)
-                              for path in paths for p in pats)]
+        missing_files = [pattern for pats in GROUPS.values() for pattern in pats
+                         if not any(fnmatch.fnmatchcase(path, pattern) for path in paths)]
+        missing = [name for name, pats in GROUPS.items() if any(p in missing_files for p in pats)]
         if calibration and not any(fnmatch.fnmatchcase(path, p)
                                    for path in paths for p in CALIBRATION):
             missing.append("leader_calibration")
@@ -72,6 +72,7 @@ def make_plan(ids, base_url=source.DEFAULT_BASE_URL, calibration=False,
                 raise ValueError("Missing modalities. Inspect the manifest or set "
                                  "ALLOW_MISSING_MODALITIES=True explicitly")
         man["missing_modalities"] = missing
+        man["missing_files"] = missing_files
         source.filter_manifest_files([man], patterns, [])
         if not man["files"]:
             raise ValueError(f"No selected files for {rid}")
@@ -256,7 +257,8 @@ def save_to_directory(plan, target, base_url=source.DEFAULT_BASE_URL, max_hours=
             (folder / "source-healthcheck.json").write_bytes(man["raw"])
             selected = {"source": base_url, "url_id": man["url_id"],
                         "hash_algorithm": man["hash_algorithm"], "files": man["files"],
-                        "missing_modalities": man.get("missing_modalities", [])}
+                        "missing_modalities": man.get("missing_modalities", []),
+                        "missing_files": man.get("missing_files", [])}
             if grouped:
                 selected["destinations"] = {
                     entry["path"]: str(grouped_destination(target, man, entry).relative_to(target))

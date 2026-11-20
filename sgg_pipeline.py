@@ -53,7 +53,7 @@ def write_sync_report(target, rid):
               "graph_grid_seconds": 0.2,
               "object_ids": "view-local; cross-view entity matching remains unresolved",
               "transcript_clock": "source start/end seconds in trimmed_sync transcript",
-              "annotations": "original event identifiers retained; no inferred frame/time conversion",
+              "annotations": "explicit source start/end times normalized at export; IDs retained; benchmark targets kept separate",
               "sensor_clocks": clocks, "all_modalities_aligned": False}
     report["sensor_clock_mapping"] = {"path": "sensor-clock.json", "verified": verified}
     download.write_json_atomic(folder / "sync-status.json", report)
@@ -392,7 +392,8 @@ def main(argv=None):
             metadata_folder.mkdir(parents=True, exist_ok=True)
             (metadata_folder / "source-healthcheck.json").write_bytes(man["raw"])
             download.write_json_atomic(metadata_folder / "selection.json", {
-                "files": man["files"], "missing_modalities": man.get("missing_modalities", [])})
+                "files": man["files"], "missing_modalities": man.get("missing_modalities", []),
+                "missing_files": man.get("missing_files", [])})
             for entry in man["files"]:
                 if entry["path"] in video_paths.values():
                     continue

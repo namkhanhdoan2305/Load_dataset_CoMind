@@ -195,6 +195,9 @@ class ExportIntegrationTests(unittest.TestCase):
                                    for delta in (0, 200000, 400000, 600000)])
         self.mapping["source_sensor_sha256"] = {"gaze": source.file_digest(self.gaze_path),
                                                "hands": source.file_digest(self.hand_path)}
+        self.mapping["source_transcript_sha256"] = {
+            role: source.file_digest(self.recording / "transcripts" / f"{role}_trimmed_sync_transcript.json")
+            for role in ("leader", "helper")}
         (self.recording / "sensor-clock.json").write_text(json.dumps(self.mapping))
 
     def rows(self, stride=1):
@@ -205,7 +208,8 @@ class ExportIntegrationTests(unittest.TestCase):
     def test_export_attaches_cues_with_same_step_time_and_raw_clock_provenance(self):
         manifest = belief_data.export_recording(self.recording)
         rows = self.rows()
-        self.assertTrue(manifest["all_modalities_aligned"])
+        self.assertTrue(manifest["timed_model_inputs_aligned"])
+        self.assertFalse(manifest["all_modalities_aligned"])  # Fixture has no benchmark annotation files.
         self.assertIsNone(rows[0]["gaze_features"])
         gaze = rows[1]["gaze_features"]
         self.assertEqual(gaze["aligned_time_us"], rows[1]["time_us"])

@@ -124,6 +124,26 @@ class BeliefDataTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Missing speech segment timestamps"):
             belief_data.export_recording(self.recording)
 
+    def test_word_stream_is_available_before_long_segment_completes(self):
+        path = self.recording / "transcripts/leader_trimmed_sync_transcript.json"
+        path.write_text(json.dumps({"segments": [{"start": 0.1, "end": 10, "text": "left drawer",
+            "words": [{"start": 0.1, "end": 0.15, "word": "left"},
+                      {"start": 0.35, "end": 0.45, "word": "drawer"},
+                      {"start": 0.35, "end": 0.45, "word": "now"}]}]}))
+        manifest = belief_data.export_recording(self.recording)
+        with gzip.open(self.recording / "belief_inputs/steps.jsonl.gz", "rt") as handle:
+            rows = [json.loads(line) for line in handle]
+        self.assertEqual([[w["text"] for w in row["new_speech_words"]] for row in rows],
+                         [[], ["left"], [], ["drawer", "now"]])
+        self.assertTrue(all(not row["new_speech_events"] for row in rows))
+        self.assertEqual(manifest["speech_words_emitted"], 3)
+
+    def test_wrong_recording_transcript_is_rejected_by_source_hash(self):
+        (self.recording / "sensor-clock.json").write_text(json.dumps({
+            "source_transcript_sha256": {"leader": "wrong-source-hash"}}))
+        with self.assertRaisesRegex(ValueError, "Transcript missing or hash differs"):
+            belief_data.speech_events(self.recording)
+
     def test_invalid_stride_is_rejected(self):
         for stride in (0, -1, 1.5, True):
             with self.assertRaisesRegex(ValueError, "positive integer"):

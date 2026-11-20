@@ -224,6 +224,8 @@ def prepare_clock(recording, manifest, base_url=source.DEFAULT_BASE_URL):
     sensor_paths = {"gaze": "mps_leader_trimmed_vrs/eye_gaze/general_eye_gaze.csv",
                     "hands": "mps_leader_trimmed_vrs/hand_tracking/hand_tracking_results.csv"}
     sensor_hashes = {key: entries[path]["hash"] for key, path in sensor_paths.items() if path in entries}
+    transcript_hashes = {role: entries[path]["hash"] for role in ("leader", "helper")
+                         if (path := f"transcripts/{role}_trimmed_sync_transcript.json") in entries}
     path = recording / "sensor-clock.json"
     if path.exists():
         saved = json.loads(path.read_text())
@@ -234,6 +236,9 @@ def prepare_clock(recording, manifest, base_url=source.DEFAULT_BASE_URL):
                 and saved.get("clock_id") == clock_id(rid)):
             proof = saved["anchor_checks"]
             verify_anchors(saved["video"], proof["first_rgb_device_ns"], proof["last_rgb_device_ns"])
+            if saved.get("source_transcript_sha256") != transcript_hashes:
+                saved["source_transcript_sha256"] = transcript_hashes
+                write_json_atomic(path, saved)
             return saved
     readers = {key: RangeReader(source.build_url(base_url, rid, paths[key]), row["size"],
                                 max_bytes=32 * 2**20 if key == "mp4" else 4 * 2**20)
@@ -246,6 +251,7 @@ def prepare_clock(recording, manifest, base_url=source.DEFAULT_BASE_URL):
                "device_clock_id": f"comind:{rid}:leader_device_time", "video": info,
                "source_paths": paths, "source_hashes": {k: row["hash"] for k, row in selected.items()},
                "source_sensor_sha256": sensor_hashes,
+               "source_transcript_sha256": transcript_hashes,
                "hash_algorithm": manifest["hash_algorithm"], "anchor_checks": proof,
                "metadata_bytes_read": {k: r.bytes_read for k, r in readers.items()},
                "physical_audio_video_alignment_verified": False,

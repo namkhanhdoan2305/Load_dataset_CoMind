@@ -12,12 +12,12 @@ Pipeline đã thống nhất clock MP4 theo recording và ghép transcript bằn
 | Transcript segment | Giữ start/end nguồn; toàn bộ đoạn được phát đúng một lần sau end | Chưa xác minh độc lập độ lệch audio/video hoặc độ chính xác ASR |
 | Transcript word | Timeline giữ từ đã kết thúc và timestamp integer; từ thiếu timestamp được đếm riêng | Word timeline chưa được dùng làm text input tăng dần trong encoder export |
 | Gaze/hand | Ghép theo origin MP4, đối chiếu anchor RGB VRS đầu/cuối và hash CSV | Sample quá cũ/thiếu để null; pose invalid được mask; tọa độ vẫn CPF/device |
-| Annotation | Lưu bản chung và tách đúng recording; giữ nguyên event ID, cả nhãn null | Chưa chuyển event ID thành thời gian |
+| Annotation | Chuẩn hóa start/end nguồn, đối chiếu frame/time, chỉ mục nhãn theo step | Nhãn tách riêng, không đưa target vào observation input; giữ null nguồn |
 | Task | Chưa xuất task graph, step hiện hành hay nhãn hoàn thành nhiệm vụ | Cần schema và sự kiện có mốc thời gian được kiểm chứng |
 | Belief | Xuất đầu vào graph/text và loader nhãn riêng | Chưa có nhãn belief tự động, mô hình encoder/decoder hoặc training loop |
 | Entity giữa hai view | Namespace `leader:<id>` và `helper:<id>` riêng | Chưa đối chiếu cùng một vật giữa hai camera |
 
-Thứ tự các bước của task có thể cố định; thời điểm người thực hiện bắt đầu/kết thúc từng bước vẫn cần gắn với bằng chứng. Pipeline hiện chưa làm phần này. Không dùng số thứ tự annotation làm giây hoặc frame khi chưa xác minh quy ước nguồn.
+Thứ tự các bước của task có thể cố định; thời điểm người thực hiện bắt đầu/kết thúc từng bước vẫn cần gắn với bằng chứng. Pipeline hiện chưa làm task progress. Annotation benchmark có start/end rõ ràng và đã ghép theo các trường đó; không dùng số trong event ID làm timestamp.
 
 ## Quy ước mốc thời gian
 
@@ -40,7 +40,7 @@ Ví dụ đoạn nói bắt đầu 12,10 s, kết thúc 13,07 s. Trên lưới 0
 
 `event_id` ổn định theo recording, stream, chỉ số segment và mốc nguồn. Context mặc định 10 giây chỉ điều khiển tham chiếu văn bản gần đây; belief state phải do encoder truyền qua thời gian, chưa tự giảm độ tin cậy vì lời nói đã cũ.
 
-Đoạn nói dài sẽ trì hoãn nội dung tới cuối đoạn. Đây là lựa chọn phát sự kiện của bản thử. Timeline đã giữ từ kết thúc sớm hơn để có thể phát triển input tăng dần sau khi review; hiện input train vẫn dùng completed segment. Timestamp ASR nguồn được giữ nguyên, không coi đó là thời gian hoàn tất tính toán ASR online.
+Đoạn nói dài sẽ trì hoãn nội dung tới cuối đoạn. Đây là lựa chọn phát sự kiện của bản thử. Input hiện có `new_speech_words` phát từ tăng dần sau end của từng từ. Completed segment được giữ như lựa chọn riêng; chọn một representation khi đưa vào encoder để tránh đếm lặp. Timestamp ASR nguồn được giữ nguyên, không coi đó là thời gian hoàn tất tính toán ASR online.
 
 Tên stream leader/helper chỉ nguồn ghi âm. Speaker ID giữ theo nguồn, chưa được ánh xạ sang danh tính. Hai microphone có thể thu cùng câu; code giữ provenance, chưa khử lặp ngữ nghĩa và chưa coi hai bản thu là hai xác nhận độc lập. Transcript thiếu start/end segment gây lỗi; word thiếu thời gian được đếm riêng trong báo cáo đồng bộ.
 
@@ -68,6 +68,7 @@ CoMind_REACTpp/
       joint_attention.json
       interaction_anticipation.json
       handover.json
+      timed_events.json
     graphs/
       leader/graphs.jsonl.gz
       leader/progress.json
@@ -79,8 +80,10 @@ CoMind_REACTpp/
     belief_inputs/
       steps.jsonl.gz
       speech_events.json
+      speech_words.json
       speech_alignment.json
       sensor_alignment.json
+      benchmark_labels.jsonl.gz
       manifest.json
     belief_inputs_stride_2/          # Chỉ có khi yêu cầu export thêm
     belief_inputs_stride_5/          # Chỉ có khi yêu cầu export thêm
@@ -129,6 +132,6 @@ So sánh này thay cả tần suất quan sát graph và cập nhật encoder; m
 
 ## Kiểm chứng hiện có
 
-78 kiểm thử tự động bằng dữ liệu nhỏ, video/perception giả lập đã qua: lọc đúng file nguồn, resume/hash, tách recording, clock/PTS, text không phát trước end, sự kiện phát một lần, gom speech khi đổi stride, báo tail, giữ graph gốc, từ chối nhãn sai lưới và chặn multimodal training khi clock chưa ánh xạ.
+87 kiểm thử tự động bằng dữ liệu nhỏ, video/perception giả lập đã qua: lọc đúng file nguồn, resume/hash, tách recording, clock/PTS, text không phát trước end, sự kiện phát một lần, gom speech khi đổi stride, báo tail, giữ graph gốc, từ chối nhãn sai lưới và chặn multimodal training khi clock chưa ánh xạ.
 
 Chưa có lượt inference model thật trên T4 trong môi trường này. Báo cáo chưa chứng nhận tốc độ, VRAM, chất lượng SGG hay đồng bộ vật lý của recording. Kết quả một session do người dùng chạy là bước kiểm chứng tiếp theo.

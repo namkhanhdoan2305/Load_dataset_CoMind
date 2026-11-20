@@ -60,6 +60,15 @@ class ExactSelectionTests(unittest.TestCase):
         self.assertIn("leader_hands", plan[1]["missing_modalities"])
         self.assertFalse(any("gapfill" in e["path"] for e in plan[1]["files"]))
 
+    def test_one_transcript_does_not_satisfy_the_required_pair(self):
+        missing_path = downloader.GROUPS["transcripts"][1]
+        recording = self.manifest([p for p in self.wanted if p != missing_path], self.rid)
+        common = self.manifest(downloader.ANNOTATIONS, "annotations")
+        with mock.patch.object(source, "fetch_manifest", side_effect=[recording, common]):
+            plan = downloader.make_plan([self.rid], allow_missing=True)
+        self.assertIn("transcripts", plan[1]["missing_modalities"])
+        self.assertIn(missing_path, plan[1]["missing_files"])
+
 
 class GroupedLayoutTests(unittest.TestCase):
     def test_reorganization_recovers_after_copy_committed_but_old_file_remained(self):

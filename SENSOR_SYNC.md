@@ -68,7 +68,7 @@ hand_features
 
 `belief_inputs/sensor_alignment.json` lưu số matched/valid/missing, lý do thiếu, độ cũ lớn nhất, policy và hash CSV/clock mapping. CSV được đối chiếu đúng SHA256 trong source manifest để chặn ghép nhầm recording. Raw CSV vẫn giữ nguyên.
 
-`sync-status.json` và `belief_inputs/manifest.json` ghi `sensor_clock_mapping_verified`, availability và `all_modalities_aligned`. Cờ cuối chỉ true khi clock sensor được kiểm chứng, đủ hai CSV/transcript, và hai graph qua PTS checks. Sample thiếu/invalid có mask riêng, không tự làm clock trở thành sai. `physical_audio_video_alignment_verified` vẫn false vì chưa nghe/xem đối chiếu độc lập audio/video. Task progress, nhãn belief và matching cùng object giữa hai view vẫn cần bước riêng.
+`sync-status.json` và `belief_inputs/manifest.json` ghi `sensor_clock_mapping_verified`, availability và `all_modalities_aligned`. `timed_model_inputs_aligned` kiểm tra clock sensor, đủ hai CSV, transcript đúng hash/bounds và graph qua PTS; `all_modalities_aligned` còn kiểm tra annotation benchmark timing. Xem [DATA_REVIEW.md](DATA_REVIEW.md). Sample thiếu/invalid có mask riêng, không tự làm clock trở thành sai. `physical_audio_video_alignment_verified` vẫn false vì chưa nghe/xem đối chiếu độc lập audio/video. Task progress, nhãn belief và matching cùng object giữa hai view vẫn cần bước riêng.
 
 Các graph cũ đã trích có thể chứa nhãn trạng thái sensor tại lúc trích là unresolved. Sau retrofit, trạng thái cuối được báo trong sidecar và belief export; timestamp/node/edge của graph giữ nguyên. Timeline được xuất lại theo trạng thái clock mới.
 
@@ -92,7 +92,7 @@ Lệnh prepare-only không xuất feature khi chưa có paired graphs. Muốn c�
 
 ## Kiểm chứng đã thực hiện
 
-**78 kiểm thử tự động đã qua**, gồm parser metadata scalar/vector, CFR/VFR, unit/anchor sai, VRS front/end index, từ chối server bỏ qua Range, source CSV hash, causal lookup, mask pose invalid, stride consistency, export và loader.
+**87 kiểm thử tự động đã qua**, gồm parser metadata scalar/vector, CFR/VFR, unit/anchor sai, VRS front/end index, từ chối server bỏ qua Range, source CSV hash, causal lookup, mask pose invalid, stride consistency, export và loader.
 
 Đã tải và kiểm tra hash **hai CSV thật** của recording thử, rồi ghép trên toàn bộ **8.518 mốc 5 FPS, từ 0 đến 1703,4 s**. Đây là kiểm chứng sensor trên lưới thời gian thật, không phải lượt chạy model SGG toàn phiên.
 
