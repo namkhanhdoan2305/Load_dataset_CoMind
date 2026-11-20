@@ -5,15 +5,15 @@ import gzip
 import json
 from pathlib import Path
 
-import comind_download as source
-from comind_to_hf import GROUPS, ANNOTATIONS, grouped_destination
+import comind_source as source
+from comind_data import GROUPS, ANNOTATIONS, grouped_destination
 from time_contract import clock_id, graph_time_us
 
 
 def review(recording, work_dir="/content/comind-sgg-work", source_dir="/content/drive/MyDrive/CoMind"):
     recording = Path(recording).resolve()
     root, rid = recording.parent.parent, recording.name
-    errors, files, graph_hashes = [], {}, {}
+    errors, files = [], {}
     manifest_path = recording / "belief_inputs/manifest.json"
     manifest = json.loads(manifest_path.read_text())
     raw_path = root / "metadata" / rid / "source-healthcheck.json"
@@ -25,7 +25,6 @@ def review(recording, work_dir="/content/comind-sgg-work", source_dir="/content/
         digest = source.file_digest(path)
         if not progress["complete"] or digest != progress["sha256"] or digest != manifest["source_graph_sha256"][view]:
             errors.append(f"Incomplete/corrupt graph: {view}")
-        graph_hashes[view] = digest
     for group, names in GROUPS.items():
         for name in names:
             entry = expected.get(name)

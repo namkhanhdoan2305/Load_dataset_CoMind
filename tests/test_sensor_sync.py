@@ -10,7 +10,7 @@ import unittest
 from unittest import mock
 
 import belief_data
-import comind_download as source
+import comind_source as source
 from sensor_sync import (PROFILE, RECORD, RangeReader, SensorAligner, PastSampler,
                          gaze_values, hand_values, parse_moov, verify_anchors, vrs_rgb_bounds)
 from time_contract import clock_id

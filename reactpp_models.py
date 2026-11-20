@@ -9,7 +9,14 @@ import json
 from pathlib import Path
 import time
 
-from sgg_models import box_iou
+
+def box_iou(a, b):
+    width = max(0, min(a[2], b[2]) - max(a[0], b[0]))
+    height = max(0, min(a[3], b[3]) - max(a[1], b[1]))
+    intersection = width * height
+    area_a = max(0, a[2] - a[0]) * max(0, a[3] - a[1])
+    area_b = max(0, b[2] - b[0]) * max(0, b[3] - b[1])
+    return intersection / max(area_a + area_b - intersection, 1e-9)
 
 
 MODEL = {"id": "maelic/REACTPlusPlus_PSG",
@@ -157,7 +164,7 @@ def decode_predictions(boxes, relations, image_shape, transform, objects, predic
 def require_cuda_provider(session):
     if "CUDAExecutionProvider" not in session.get_providers():
         raise RuntimeError("REACT++ CUDA provider did not initialize; refusing silent CPU inference. "
-                           "Install requirements-sgg.txt in a T4 runtime and check CUDA/cuDNN libraries.")
+                           "Install requirements.txt in a T4 runtime and check CUDA/cuDNN libraries.")
 
 
 class Perception:
@@ -169,13 +176,13 @@ class Perception:
             if hasattr(ort, "preload_dlls"):
                 ort.preload_dlls(directory="")
             if "CUDAExecutionProvider" not in ort.get_available_providers():
-                raise RuntimeError("ONNX Runtime has no CUDA provider; choose a T4 runtime and install requirements-sgg.txt")
+                raise RuntimeError("ONNX Runtime has no CUDA provider; choose a T4 runtime and install requirements.txt")
         if model_path is None:
             from huggingface_hub import hf_hub_download
             model = settings["models"]["scene_graph"]
             print(f"Downloading/loading REACT++ YOLO12m ONNX ({model['revision'][:12]})", flush=True)
             model_path = hf_hub_download(model["id"], model["filename"], revision=model["revision"])
-        import comind_download as source
+        import comind_source as source
         model_sha = source.file_digest(model_path)
         if model_sha != settings["models"]["scene_graph"]["sha256"]:
             raise ValueError("REACT++ checkpoint SHA256 differs from the verified pinned ONNX model")

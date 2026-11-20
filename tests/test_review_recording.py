@@ -4,8 +4,8 @@ import json
 from pathlib import Path
 import unittest
 
-import comind_download as source
-from comind_to_hf import GROUPS, ANNOTATIONS, split_annotations
+import comind_source as source
+from comind_data import GROUPS, ANNOTATIONS, split_annotations
 from belief_data import export_recording
 from review_recording import review
 import test_sensor_sync

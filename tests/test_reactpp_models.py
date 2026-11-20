@@ -78,7 +78,7 @@ class ConfigurationTests(unittest.TestCase):
 HAS_IMAGES = all(importlib.util.find_spec(name) for name in ("numpy", "cv2"))
 
 
-@unittest.skipUnless(HAS_IMAGES, "Image dependencies required (Colab requirements-sgg.txt)")
+@unittest.skipUnless(HAS_IMAGES, "Image dependencies required (Colab requirements.txt)")
 class OutputContractTests(unittest.TestCase):
     def setUp(self):
         import numpy as np

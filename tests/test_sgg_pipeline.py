@@ -9,7 +9,6 @@ import unittest
 from unittest import mock
 
 import sgg_pipeline as pipeline
-from sgg_models import match_detections
 
 
 class FakeVideo:
@@ -49,6 +48,13 @@ class GraphStreamTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.settings = copy.deepcopy(pipeline.DEFAULT_SETTINGS)
+
+    def test_unmounted_drive_stops_before_model_or_network(self):
+        with mock.patch.object(pipeline.os.path, "ismount", return_value=False), \
+                mock.patch.object(pipeline.download, "make_plan") as plan:
+            with self.assertRaises(SystemExit):
+                pipeline.main([])
+        plan.assert_not_called()
 
     def extract(self, rid, view, model, deadline=float("inf")):
         folder = self.root / "recordings" / rid / "graphs" / view
@@ -140,13 +146,6 @@ class GraphStreamTests(unittest.TestCase):
         self.assertFalse(report["all_modalities_aligned"])
         self.assertEqual(report["sensor_clocks"]["leader_gaze"]["mapping_to_mp4"], "unresolved")
 
-    def test_tracking_match_is_one_to_one_for_same_class_objects(self):
-        tracks = [{"track_id": 1, "label": "bowl", "box": [0, 0, 10, 10]}]
-        detections = [{"label": "bowl", "box": [0, 0, 10, 10]},
-                      {"label": "bowl", "box": [1, 1, 10, 10]}]
-        assigned, next_id = match_detections(detections, tracks, 2, maximum=20)
-        self.assertEqual({a["track_id"] for a in assigned}, {1, 2})
-        self.assertEqual(next_id, 3)
 
 
 if __name__ == "__main__":

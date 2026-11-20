@@ -1,5 +1,9 @@
 # Review sáu nhóm dữ liệu và đồng bộ — 21/11/2026
 
+## Cấu hình perception
+
+REACT++ YOLO12m ONNX được khóa tại revision `25aaf1838c3f6cee32f69a43871bab0870af4bea`, file `yolo12m/react_pp_yolo12m.onnx`, SHA256 `38c4bdbb7e2a077131ffcbf57af726eb30574318e2344d5b4bfc1d3a48f5b2fe`. ONNX đã chứa YOLO và relation head; bbox tracker không dùng model học thêm. Checkpoint thật đã được chạy trên CPU với frame CoMind và kiểm tra resume qua biên chunk. Chưa có benchmark T4 của assistant.
+
 ## Kết luận và phạm vi
 
 Pipeline chọn đủ sáu **nhóm** đã thống nhất. Một recording có **6 payload nguồn** (hai MP4, gaze CSV, hand CSV, hai transcript JSON) và **3 annotation JSON chung** tải một lần, sau đó tách đúng recording. Số sáu nhóm không có nghĩa chỉ có sáu file tổng cộng.
@@ -92,4 +96,4 @@ Review cũng đã sửa kiểm tra thiếu transcript: trước đó một file 
 
 Audit chỉ đọc dữ liệu, không tải file hoặc chạy GPU. Kiểm tra nguồn đúng hash, hai graph complete/hash, source-video provenance, input hash, mốc view/step/sensor, lời nói không lặp/không vượt thời điểm step, annotation tách đúng recording và derived-file hashes. Nếu video đã xóa, báo `graph_provenance_verified_raw_not_retained`, không giả vờ kiểm tra lại bytes đã xóa. Thành công có `status=metadata_and_file_checks_passed`, `errors=[]`; vẫn báo các giới hạn vật lý/tail/validity.
 
-**87 kiểm thử tự động đã qua**, gồm regression cho thiếu transcript, timing annotation, event ngắn, word stream, source hash, không rò label vào input và audit output.
+**80 kiểm thử cho luồng hiện hành đã qua**, gồm regression cho thiếu transcript, timing annotation, event ngắn, word stream, source hash, không rò label vào input và audit output.

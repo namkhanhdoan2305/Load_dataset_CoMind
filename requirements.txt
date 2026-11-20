@@ -1,1 +1,6 @@
-huggingface_hub>=0.34,<2
+# REACT++ YOLO12m ONNX; no SAM2, Grounding DINO or RelateAnything installation.
+# ORT >=1.27 defaults to CUDA 13; this pin uses CUDA 12 + cuDNN 9.
+onnxruntime-gpu[cuda,cudnn]==1.26.0
+opencv-python-headless>=4.10,<5
+numpy>=1.26,<3
+huggingface-hub>=0.34,<3

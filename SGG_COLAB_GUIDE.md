@@ -1,6 +1,6 @@
 # Chạy một recording với REACT++ + YOLO
 
-Pipeline hiện dùng **REACT++ YOLO12m ONNX**, detector và relation head trong cùng checkpoint. Tracker bbox giữ ID theo nhãn, IoU và vận tốc; graph/tracking đều 5 FPS, không chạy SAM2. Checkpoint khóa revision và SHA256. Xem [kiểm chứng tích hợp](REACTPP_VALIDATION.md).
+Pipeline hiện dùng **REACT++ YOLO12m ONNX**, detector và relation head trong cùng checkpoint. Tracker bbox giữ ID theo nhãn, IoU và vận tốc; graph/tracking đều 5 FPS, không chạy SAM2. Checkpoint khóa revision và SHA256. Xem [review và kiểm chứng dữ liệu](DATA_REVIEW.md).
 
 Kết quả mới lưu vào **`MyDrive/CoMind_REACTpp`** để giữ riêng graph của pipeline DINO/SAM2 cũ. Không ghép tiếp graph cũ bằng model mới. Video cũ trên ổ tạm Colab được kiểm tra hash rồi tái sử dụng; video có sẵn trong `MyDrive/CoMind` cũng được đọc lại, không di chuyển/xóa.
 
@@ -29,7 +29,7 @@ Chọn GPU T4. Gỡ bản ONNX Runtime cũ nếu có để tránh hai package CP
 
 ```python
 !python -m pip uninstall -y onnxruntime onnxruntime-gpu
-!python -m pip install -r requirements-sgg.txt
+!python -m pip install -r requirements.txt
 ```
 
 Chạy đúng một recording. `-u` in log ngay, `--keep-videos` giữ video tạm để đối chiếu sau.

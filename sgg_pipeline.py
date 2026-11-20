@@ -13,9 +13,9 @@ import time
 
 os.environ.setdefault("TQDM_DISABLE", "1")
 
-import comind_download as source
-import comind_to_hf as download
-from load_comind_drive import select_sessions
+import comind_source as source
+import comind_data as download
+from comind_data import select_sessions
 from reactpp_models import SETTINGS
 from time_contract import clock_id, graph_time_us, microseconds
 
@@ -364,14 +364,15 @@ def main(argv=None):
         try:
             import onnxruntime as ort
             if "CUDAExecutionProvider" not in ort.get_available_providers():
-                parser.error("Choose a T4 runtime and install the GPU ONNX Runtime in requirements-sgg.txt")
+                parser.error("Choose a T4 runtime and install the GPU ONNX Runtime in requirements.txt")
         except ImportError:
-            parser.error("Install requirements-sgg.txt in the Colab GPU runtime first")
-    plan = download.make_plan(ids, allow_missing=True)
+            parser.error("Install requirements.txt in the Colab GPU runtime first")
+    plan = download.make_plan(ids, allow_missing=True, show_files=args.dry_run)
     if args.dry_run:
         print("Settings: REACT++ YOLO12m ONNX + bbox tracker, graph/tracking 5 FPS, 4-second chunks")
         return
     target.mkdir(parents=True, exist_ok=True)
+    source.write_split_files(str(target))
     work.mkdir(parents=True, exist_ok=True)
     deadline = time.monotonic() + args.max_hours * 3600
     settings = resolved_settings(target)
@@ -380,7 +381,8 @@ def main(argv=None):
     download.write_json_atomic(target / "reactpp-model-info.json", model.info)
     video_paths = {"leader": download.GROUPS["leader_video"][0],
                    "helper": download.GROUPS["helper_video"][0]}
-    status = {"recordings": ids, "completed": [], "state": "running", "current": None}
+    status = {"recordings": ids, "source_split": "train", "seed": args.seed,
+              "completed": [], "state": "running", "current": None}
     report = target / "sgg-status.json"
     download.write_json_atomic(report, status)
     try:

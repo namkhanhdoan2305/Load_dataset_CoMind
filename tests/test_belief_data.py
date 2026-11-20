@@ -7,7 +7,7 @@ import tempfile
 import unittest
 
 import belief_data
-import comind_download as source
+import comind_source as source
 
 
 class BeliefDataTests(unittest.TestCase):

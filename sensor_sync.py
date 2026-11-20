@@ -12,8 +12,8 @@ import re
 import struct
 import urllib.request
 
-import comind_download as source
-from comind_to_hf import retry, write_json_atomic
+import comind_source as source
+from comind_data import retry, write_json_atomic
 from time_contract import clock_id
 
 

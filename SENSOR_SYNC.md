@@ -92,7 +92,7 @@ Lệnh prepare-only không xuất feature khi chưa có paired graphs. Muốn c�
 
 ## Kiểm chứng đã thực hiện
 
-**87 kiểm thử tự động đã qua**, gồm parser metadata scalar/vector, CFR/VFR, unit/anchor sai, VRS front/end index, từ chối server bỏ qua Range, source CSV hash, causal lookup, mask pose invalid, stride consistency, export và loader.
+**80 kiểm thử cho luồng hiện hành đã qua**, gồm parser metadata scalar/vector, CFR/VFR, unit/anchor sai, VRS front/end index, từ chối server bỏ qua Range, source CSV hash, causal lookup, mask pose invalid, stride consistency, export và loader.
 
 Đã tải và kiểm tra hash **hai CSV thật** của recording thử, rồi ghép trên toàn bộ **8.518 mốc 5 FPS, từ 0 đến 1703,4 s**. Đây là kiểm chứng sensor trên lưới thời gian thật, không phải lượt chạy model SGG toàn phiên.
 

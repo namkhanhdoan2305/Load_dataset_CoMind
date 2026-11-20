@@ -7,8 +7,8 @@ import json
 import math
 from pathlib import Path
 
-import comind_download as source
-from comind_to_hf import write_json_atomic
+import comind_source as source
+from comind_data import write_json_atomic
 from time_contract import clock_id, graph_time_us, microseconds
 from sensor_sync import SensorAligner
 from annotation_timing import AnnotationTimeline

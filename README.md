@@ -1,122 +1,87 @@
 # Load_dataset_CoMind
 
-Tải bộ CoMind chọn lọc trên Colab CPU, lưu vào Google Drive hoặc chuyển tới Hugging Face. Máy cá nhân chỉ mở notebook.
+Pipeline hiện hành: **tải từng recording → REACT++ YOLO12m ONNX + tracker bbox → ghép graph/gaze/hand/lời nói → lưu Google Drive**. Mặc định chạy một recording, graph 5 FPS/view. Video chỉ lưu tạm trên Colab; giữ để review bằng `--keep-videos`.
 
-## Thử SGG REACT++ + YOLO trên một recording
+[Hướng dẫn Colab](SGG_COLAB_GUIDE.md) · [Review sáu nhóm dữ liệu](DATA_REVIEW.md) · [Quy ước clock gaze/hand](SENSOR_SYNC.md)
 
-Đọc [SGG_COLAB_GUIDE.md](SGG_COLAB_GUIDE.md) để chuyển sang **REACT++ YOLO12m ONNX + tracker bbox**, chạy `python -u sgg_pipeline.py --sessions 1 --keep-videos`. Graph/tracking 5 FPS, lưu riêng tại `MyDrive/CoMind_REACTpp`, tái sử dụng video đã tải và tiếp tục được checkpoint. Model mới không chạy SAM2/DINO/RelateAnything. Xem [kiểm chứng](REACTPP_VALIDATION.md) và [review đủ sáu nhóm](DATA_REVIEW.md). Hai graph/transcript giữ quy ước thời gian cũ. Gaze/hand được ghép từ clock MP4 có kiểm chứng anchor VRS và hash CSV; xem [SENSOR_SYNC.md](SENSOR_SYNC.md). Task progress và nhãn belief chưa tự sinh.
+## Chạy thử trên Colab T4
 
-Sau khi hoàn tất mỗi recording, `belief_inputs/steps.jsonl.gz` và `speech_events.json` cung cấp các bước tuần tự để xây dựng encoder belief. Sự kiện lời nói hoàn tất được phát một lần, có ID và thời điểm, giữ ngữ cảnh 10 giây bằng tham chiếu. Nhãn belief được gán riêng; xem hướng dẫn về `belief_data.iter_training_steps` để đọc dữ liệu và nhãn.
+Nếu đã clone repo, dừng cell chạy cũ rồi cập nhật:
 
-Mốc graph dùng `clock_id`, `time_us` số nguyên trên lưới 200000 us và `source_pts_us` từ decoder. PTS hoặc clock sai sẽ gây dừng. `timed_model_inputs_aligned` kiểm tra clock MPS, đủ hai CSV, transcript đúng hash/bounds và graph qua PTS. `all_modalities_aligned` còn yêu cầu annotation benchmark đã chuẩn hóa timing đầy đủ. Mẫu thiếu/quá cũ/pose không hợp lệ vẫn có mask riêng. Kiểm chứng audio/video vật lý và biến đổi tọa độ 3D là các vấn đề riêng.
+```python
+%cd /content/Load_dataset_CoMind
+!git pull --ff-only
+```
 
-## Tải trước 30 phiên vào Google Drive
-
-Mở Colab runtime CPU, chạy lần lượt các cell. Phần tải Drive dùng thư viện chuẩn Python có sẵn.
+Runtime mới thì clone và mount Drive trước:
 
 ```python
 !git clone https://github.com/namkhanhdoan2305/Load_dataset_CoMind.git /content/Load_dataset_CoMind
 %cd /content/Load_dataset_CoMind
-```
-
-Nếu đã clone trong runtime này, dùng `%cd /content/Load_dataset_CoMind` rồi `!git pull --ff-only`.
-
-```python
 from google.colab import drive
 drive.mount('/content/drive')
 ```
 
-Tính dung lượng đúng 30 phiên đã chọn bằng manifest nhỏ trước khi tải payload.
+Repo chỉ dùng một file dependencies. Không cài đồng thời hai package ONNX Runtime CPU/GPU:
 
 ```python
-!python load_comind_drive.py --sessions 30 --dry-run
+!python -m pip uninstall -y onnxruntime onnxruntime-gpu
+!python -m pip install -r requirements.txt
 ```
 
 ```python
-!python load_comind_drive.py --sessions 30
+!python -u sgg_pipeline.py --sessions 1 --keep-videos
 ```
 
-File được lưu vào `/content/drive/MyDrive/CoMind`. Mặc định chọn 30 phiên từ split train chính thức, xáo trộn bằng seed 42. `subsets/sessions-30-seed-42.json` ghi rõ danh sách UUID. Cần tách train/validation trước khi huấn luyện.
+Kết quả: `/content/drive/MyDrive/CoMind_REACTpp/recordings/<ID>/`. Video tạm: `/content/comind-sgg-work/<ID>/mp4s/`. Video đã tải đủ được kiểm tra hash rồi tái sử dụng. Khi bỏ `--keep-videos`, chỉ video tạm được xóa sau khi cả hai view và export hoàn tất; video có sẵn trên Drive vẫn giữ nguyên.
 
-Dry-run ngày 20/11/2026 của bộ mặc định báo **99,407 GB** (92,580 GiB), gồm annotations chung một lần. Có **1 phiên thiếu leader hand tracking**, UUID `6473136b-6037-46be-a8b0-fb86b5997376`. Giá trị có thể thay đổi khi tác giả cập nhật dữ liệu; dry-run đọc manifest hiện tại.
+Recording đầu seed 42 là `8ee6c694-38be-4a90-ad5a-75ef4449e972`, mỗi view dài 28 phút 23,6 giây. Thời gian chạy T4 cần đo từ log thực tế.
 
-Mỗi file được đối chiếu hash từ manifest gốc. Chạy lại cùng lệnh để tiếp tục file `.part`, kiểm tra file đã có và tải các file còn thiếu. `download-status.json` lưu tiến độ đã xác minh. Ngân sách mặc định 5 giờ được kiểm tra trước mỗi file, script hoàn thành file đang chạy rồi dừng. Thời gian một lượt có thể vượt 5 giờ bởi thời gian tải file cuối và bước kiểm tra hash. Thời gian hoàn thành cả 30 phiên phụ thuộc mạng và Drive I/O.
+## Kiểm tra và mở rộng
 
-Mỗi recording được chia thành sáu nhóm như cây thư mục dưới đây. File đã tải theo cấu trúc cũ được chuyển sang nhóm tương ứng bằng cách sao chép, kiểm tra hash rồi mới bỏ bản ở đường dẫn cũ. File `.part` được giữ tiến độ khi chuyển. Cần có dung lượng trống cho một bản sao tạm của file đang chuyển.
-
-```text
-CoMind/
-  recordings/<recording_ID>/
-    leader_video/leader_trimmed_sync.mp4
-    helper_video/helper_trimmed_sync.mp4
-    leader_gaze/general_eye_gaze.csv
-    leader_hands/hand_tracking_results.csv
-    transcripts/
-      leader_trimmed_sync_transcript.json
-      helper_trimmed_sync_transcript.json
-    annotations/
-      joint_attention.json
-      interaction_anticipation.json
-      handover.json
-  annotations/                # Ba JSON gốc chung, tải một lần
-  metadata/<recording_ID>/     # Manifest gốc, file được chọn và ánh xạ đường dẫn
-  subsets/
-  split/
-  download-status.json
-```
-
-Annotation theo phiên giữ nguyên event ID, nhãn và giá trị null từ tác giả. Event ID được bảo toàn theo nguồn, cần đọc schema gốc để diễn giải thời gian.
-
-Một số phiên thiếu hand tracking từ nguồn. Mặc định tiếp tục với các file có sẵn và ghi `missing_modalities` trong manifest chọn lọc. Script dừng nếu một trong hai video bắt buộc bị thiếu. Thêm `--strict-modalities` để dừng với mọi nhóm bị thiếu.
-
-Mở rộng lên 50 phiên bằng cùng seed và thư mục. Danh sách mới giữ toàn bộ 30 phiên cũ.
+Chỉ đọc manifest, in đúng danh sách file và dung lượng, không tải payload/model:
 
 ```python
-!python load_comind_drive.py --sessions 50
+!python sgg_pipeline.py --sessions 1 --dry-run
 ```
 
-Có thể đổi đích bằng `--target /content/drive/MyDrive/CoMind`, ngân sách bằng `--max-hours 8`, hoặc thêm calibration bằng `--leader-calibration`. Khi bật thêm calibration, script giữ các file đã có và tải bổ sung, metadata cập nhật theo bộ chọn lọc mới.
-
-## Thành phần dữ liệu
-
-Lấy hai video ego MP4 đồng bộ, gaze và hand tracking của leader, transcript và nhãn chung chính thức. Tùy chọn lấy thêm leader calibration. Chạy lại để tiếp tục tải và đối chiếu hash, HF upload thành công được xác minh trước khi xóa file tạm.
-
-| Nhóm | Đường dẫn |
-| --- | --- |
-| Leader video | `mp4s/leader_trimmed_sync.mp4` |
-| Helper video | `mp4s/helper_trimmed_sync.mp4` |
-| Leader gaze | `mps_leader_trimmed_vrs/eye_gaze/general_eye_gaze.csv` |
-| Leader hands | `mps_leader_trimmed_vrs/hand_tracking/hand_tracking_results.csv` |
-| Transcript | Hai file `leader_trimmed_sync_transcript.json` và `helper_trimmed_sync_transcript.json` |
-| Nhãn chung | Ba JSON consolidated chính thức, tải một lần, tách thêm bản theo recording |
-
-MP4 giữ nguyên audio và dữ liệu nguồn. Nhãn chung gồm joint attention, interaction anticipation và handover. Nhãn belief và tiến trình công thức cần được xây dựng thêm. Hai video là dữ liệu gốc để trích graph trong bước chuẩn bị tiếp theo.
-
-Đọc [hướng dẫn Colab, Google Drive và đăng nhập HF](COLAB_HF_GUIDE.md).
-
-```bash
-python comind_to_hf.py --split train --limit 1 --dry-run
-python comind_to_hf.py --split train --limit 1 --drive-dir /content/drive/MyDrive/CoMind
-```
-
-Bản gốc CoMind do ETH Zurich và cộng sự công bố, giấy phép CC BY 4.0. Ghi nguồn khi chia sẻ lại dữ liệu. [Trang tác giả](https://comind.ethz.ch/) và [paper](https://arxiv.org/abs/2607.06691).
-
-Kiểm tra luồng xử lý với dữ liệu tổng hợp bằng `python -m unittest discover -s tests -v`.
-
-## Kiểm tra file thừa của bản tải trước
-
-Bộ lọc cũ `mps_leader_*` chọn cả gapfill và trimmed. Bộ lọc mới dùng tên file chính xác, lấy dữ liệu MPS leader trimmed. Các bản `summary.json`, phụ đề ASS, transcript phụ và MPS gapfill được loại khỏi danh sách tải mới.
-
-Liệt kê đường dẫn được chọn trước khi tải bằng lệnh sau.
+Sau khi hai view complete, kiểm tra output. Nếu graph được tạo trước bản ghép sensor/word/annotation mới, chạy `sensor_sync.py` trước; các lượt mới tự ghép khi hoàn tất recording:
 
 ```python
-!python load_comind_drive.py --sessions 30 --list-files
+!python sensor_sync.py /content/drive/MyDrive/CoMind_REACTpp/recordings/RECORDING_ID
+!python review_recording.py /content/drive/MyDrive/CoMind_REACTpp/recordings/RECORDING_ID
 ```
 
-Kiểm kê file thừa đã có trong thư mục Drive bằng lệnh sau. Lệnh chỉ đọc và liệt kê, giữ nguyên dữ liệu.
+Mở rộng cùng seed và target, tiếp tục các recording đã commit:
 
 ```python
-!python load_comind_drive.py --sessions 30 --audit-existing
+!python -u sgg_pipeline.py --sessions 30
 ```
 
-Các file thừa do bản trước đã tải vẫn tồn tại tới khi bạn chủ động xóa. Manifest `source-healthcheck.json` chứa danh mục đầy đủ từ máy chủ, `selection.json` ghi đúng danh sách file được chọn và đích lưu.
+`--sessions 50` giữ 30 phiên đầu khi seed không đổi. Chỉ chọn từ official train; ghi split, seed và UUID trong output. Ngân sách mặc định 5 giờ được kiểm tra giữa file/chunk; chạy lại cùng lệnh để tiếp tục. Source nào thiếu được báo rõ, không tạo dữ liệu thay thế.
+
+## Mã nguồn đang dùng
+
+| File | Vai trò |
+|---|---|
+| `sgg_pipeline.py` | Lệnh chạy chính, tải từng recording, resume và lưu Drive |
+| `reactpp_models.py` | Checkpoint ONNX được khóa và tracker bbox |
+| `comind_source.py` | Manifest, official split, HTTP resume và hash |
+| `comind_data.py` | Chọn đúng file, chọn phiên, kiểm tra tải, tách annotation |
+| `time_contract.py` | Clock ID, giây và microsecond |
+| `sensor_sync.py` | Kiểm chứng origin MP4/VRS và ghép gaze/hand |
+| `annotation_timing.py` | Chuẩn hóa timing nhãn benchmark, giữ ngoài input |
+| `belief_data.py` | Xuất input tuần tự, word/segment và loader nhãn belief |
+| `review_recording.py` | Audit file/hash/timestamp sau xử lý, chỉ đọc |
+
+Bản dọn bỏ model DINO/SAM2/RelateAnything cũ, upload HF, lệnh tải hàng loạt raw video và các báo cáo/hướng dẫn hết dùng. Hugging Face chỉ dùng để tải checkpoint REACT++ công khai.
+
+## Dữ liệu và giới hạn
+
+Sáu nhóm gồm leader, helper, leader gaze, leader hand, hai transcript và ba annotation chung. Chọn đường dẫn chính xác, không lấy merged video, gapfill, phụ đề ASS, GoPro, scan/SLAM hoặc nguyên VRS. Đồng bộ dùng metadata MP4/VRS có kiểm chứng và hash nguồn; mẫu thiếu/invalid có mask riêng. Xem [DATA_REVIEW.md](DATA_REVIEW.md) về word stream, tail cuối phiên và các cờ đồng bộ.
+
+Những phần chưa sinh tự động: task-progress/nhãn belief, matching cùng vật giữa hai view và phép biến đổi gaze/hand sang world coordinates. Độ chính xác SGG và đồng bộ audio/video vật lý cần đánh giá riêng.
+
+Nguồn CoMind: CVG Group, ETH Zurich và cộng sự, [trang dataset](https://comind.ethz.ch/), [paper](https://arxiv.org/abs/2607.06691), CC BY 4.0. Các hàm nguồn và official split được giữ từ downloader CoMind version 20260626-01.
+
+Kiểm thử: `python -m unittest discover -s tests -v`. Các test ảnh cần dependencies NumPy/OpenCV; test CPU sử dụng checkpoint thật đã được chạy riêng, chưa có benchmark GPU T4 của assistant.
