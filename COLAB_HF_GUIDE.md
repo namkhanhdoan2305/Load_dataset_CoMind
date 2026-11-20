@@ -2,6 +2,8 @@
 
 Mã được clone vào máy ảo Colab. Dữ liệu đi từ ETH tới Colab rồi tới Google Drive hoặc Hugging Face. Máy cá nhân chỉ mở giao diện notebook.
 
+Để tải bộ 30 phiên đã chọn, theo các cell ở đầu [README](README.md). Lệnh `python load_comind_drive.py --sessions 30` lưu vào `/content/drive/MyDrive/CoMind`, mặc định ngân sách 5 giờ trước mỗi file và có thể tiếp tục khi chạy lại. Dùng `--sessions 50` để mở rộng cùng danh sách.
+
 ## Chuẩn bị mã
 
 Chọn runtime CPU trong Colab. Chạy các cell sau lần đầu trong mỗi runtime.

@@ -68,6 +68,7 @@ def make_plan(ids, base_url=source.DEFAULT_BASE_URL, calibration=False,
             if not allow_missing:
                 raise ValueError("Missing modalities. Inspect the manifest or set "
                                  "ALLOW_MISSING_MODALITIES=True explicitly")
+        man["missing_modalities"] = missing
         source.filter_manifest_files([man], patterns, [])
         if not man["files"]:
             raise ValueError(f"No selected files for {rid}")
@@ -126,9 +127,19 @@ def download_verified(man, entry, dest, base_url):
             and source.file_digest(part, man["hash_algorithm"]) == entry["hash"]):
         os.replace(part, dest)
     url = source.build_url(base_url, man["url_id"], entry["path"])
+    last_report = time.monotonic()
+
+    def report_progress(delta, absolute):
+        nonlocal last_report
+        now = time.monotonic()
+        if now - last_report >= 20:
+            print(f"  {dest.name}: {absolute / 1e9:.3f}/{entry['size'] / 1e9:.3f} GB",
+                  flush=True)
+            last_report = now
+
     for attempt in range(2):
         source.download_file(url, str(dest), entry["size"],
-                             lambda delta, absolute: None, retries=4, timeout=60)
+                             report_progress, retries=4, timeout=60)
         digest = source.file_digest(dest, man["hash_algorithm"])
         if entry["hash"] is None or digest == entry["hash"]:
             return
@@ -137,23 +148,64 @@ def download_verified(man, entry, dest, base_url):
             raise RuntimeError(f"Source hash mismatch: {entry['path']}")
 
 
-def save_to_directory(plan, target, base_url=source.DEFAULT_BASE_URL):
+def write_json_atomic(path, data):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    os.replace(temporary, path)
+
+
+def save_to_directory(plan, target, base_url=source.DEFAULT_BASE_URL, max_hours=None):
     """Download into mounted Drive or another persistent directory, without HF."""
     target = Path(target)
     target.mkdir(parents=True, exist_ok=True)
     source.write_split_files(str(target))
-    for man in plan:
-        folder = target / man["dest_subpath"]
-        folder.mkdir(parents=True, exist_ok=True)
-        (folder / "source-healthcheck.json").write_bytes(man["raw"])
-        selected = {"source": base_url, "url_id": man["url_id"],
-                    "hash_algorithm": man["hash_algorithm"], "files": man["files"]}
-        (folder / "selection.json").write_text(json.dumps(selected, indent=2))
-        for entry in man["files"]:
-            dest = folder / entry["path"]
-            print(f"DOWNLOAD / VERIFY {dest} ({entry['size'] / 1e9:.3f} GB)", flush=True)
-            download_verified(man, entry, dest, base_url)
+    started = time.monotonic()
+    status = {"state": "running", "verified_files": 0, "verified_bytes": 0,
+              "completed_groups": [], "current_file": None,
+              "total_files": sum(len(m["files"]) for m in plan),
+              "total_bytes": sum(e["size"] for m in plan for e in m["files"]),
+              "recordings": [m["url_id"] for m in plan if m["url_id"] != "annotations"]}
+    report = target / "download-status.json"
+    write_json_atomic(report, status)
+    try:
+        for man in plan:
+            folder = target / man["dest_subpath"]
+            folder.mkdir(parents=True, exist_ok=True)
+            (folder / "source-healthcheck.json").write_bytes(man["raw"])
+            selected = {"source": base_url, "url_id": man["url_id"],
+                        "hash_algorithm": man["hash_algorithm"], "files": man["files"],
+                        "missing_modalities": man.get("missing_modalities", [])}
+            write_json_atomic(folder / "selection.json", selected)
+            for entry in man["files"]:
+                if max_hours is not None and time.monotonic() - started >= max_hours * 3600:
+                    status["state"] = "budget_reached"
+                    write_json_atomic(report, status)
+                    print("Time budget reached; rerun the same command to continue.")
+                    return status
+                dest = folder / entry["path"]
+                status["current_file"] = str(dest.relative_to(target))
+                write_json_atomic(report, status)
+                print(f"DOWNLOAD / VERIFY {dest} ({entry['size'] / 1e9:.3f} GB)", flush=True)
+                download_verified(man, entry, dest, base_url)
+                status["verified_files"] += 1
+                status["verified_bytes"] += entry["size"]
+                status["elapsed_seconds"] = round(time.monotonic() - started, 1)
+                write_json_atomic(report, status)
+                print(f"VERIFIED {status['verified_files']}/{status['total_files']} files "
+                      f"({status['verified_bytes'] / 1e9:.3f} GB)", flush=True)
+            status["completed_groups"].append(man["url_id"])
+            write_json_atomic(report, status)
+    except BaseException as exc:
+        status["state"] = "interrupted" if isinstance(exc, KeyboardInterrupt) else "failed"
+        status["error_type"] = type(exc).__name__
+        write_json_atomic(report, status)
+        raise
+    status.update(state="complete", current_file=None)
+    write_json_atomic(report, status)
     print(f"Completed {target}")
+    return status
 
 
 def transfer_file(api, repo_id, man, entry, staging, base_url):
