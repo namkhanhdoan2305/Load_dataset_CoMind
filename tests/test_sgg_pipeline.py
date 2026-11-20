@@ -119,13 +119,17 @@ class GraphStreamTests(unittest.TestCase):
         folder = self.root / "recordings/session_one/transcripts"
         folder.mkdir()
         (folder / "leader_trimmed_sync_transcript.json").write_text(json.dumps({
-            "segments": [{"words": [{"word": "drawer", "start": 0.1, "end": 0.3}]}]}))
+            "segments": [{"words": [{"word": "drawer", "start": 0.1, "end": 0.3},
+                                      {"word": "untimed", "start": None, "end": None}]}]}))
+        pipeline.write_sync_report(self.root, "session_one")
         pipeline.link_graph_views(self.root, "session_one")
         with gzip.open(folder.parent / "graphs/timeline.jsonl.gz", "rt") as f:
             rows = [json.loads(line) for line in f]
         self.assertEqual(rows[1]["completed_transcript_words"], [])
         self.assertEqual(rows[2]["completed_transcript_words"][0]["word"], "drawer")
         self.assertEqual(rows[2]["completed_transcript_words"][0]["audio_stream"], "leader")
+        report = json.loads((folder.parent / "sync-status.json").read_text())
+        self.assertEqual(report["transcript_words"]["untimed_words"], 1)
 
     def test_sensor_clock_is_reported_unresolved_without_guessing_zero_offset(self):
         folder = self.root / "recordings/session_one/leader_gaze"

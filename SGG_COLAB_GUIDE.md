@@ -85,10 +85,12 @@ MyDrive/CoMind_REACTpp/
       helper/{graphs.jsonl.gz, progress.json}
       timeline.jsonl.gz
     sync-status.json
+    sensor-clock.json                 # Origin MP4, anchor VRS đầu/cuối, hash nguồn
     belief_inputs/
       steps.jsonl.gz
       speech_events.json
       speech_alignment.json
+      sensor_alignment.json           # Coverage, độ cũ mẫu và hash CSV
       manifest.json
 ```
 
@@ -104,7 +106,17 @@ Tracker chỉ phát node thực sự có detection hiện tại. Track vắng t�
 
 Mốc graph vẫn là `time_us = 0, 200000, 400000...`, `clock_id = comind:<ID>:synced_mp4`. Giữ PTS decoder; kiểm tra CFR và chênh PTS giữa hai view tối đa 1 ms. Transcript phát segment một lần sau end; giữ ID context và báo độ trễ trong `speech_alignment.json`. Đồng bộ vật lý audio/video cần kiểm tra bằng session thật.
 
-Gaze/hand giữ CSV gốc với clock thiết bị riêng; chưa ánh xạ sang MP4 nên feature đang null, `all_modalities_aligned=false`. Annotation giữ event ID nguồn; task graph/progress và nhãn belief chưa được tự sinh. Loader supervised vẫn yêu cầu nhãn riêng và chặn multimodal train mặc định khi clock chưa giải quyết.
+Gaze/hand giữ CSV gốc và được ghép vào từng step qua mốc nanosecond trong metadata MP4. Mốc đầu được đối chiếu RGB đầu VRS, mốc cuối kiểm tra trong dung sai 1,5 frame; chỉ đọc bounded metadata HTTP Range, không tải VRS 21 GB. Chọn mẫu mới nhất không vượt thời điểm frame leader: gaze tối đa 150 ms, hand tối đa 50 ms; pose confidence dưới 0,5 được mask. `gaze_features`/`hand_features` giữ source timestamp, reference, age và validity. Mẫu thiếu/quá cũ để null. Xem [quy ước và kiểm chứng sensor](SENSOR_SYNC.md).
+
+`all_modalities_aligned=true` khi clock đã kiểm chứng, đủ hai CSV/transcript và graph qua PTS checks. Cờ này xác nhận ánh xạ timestamp; tracking validity và kiểm chứng audio/video vật lý có cờ riêng. Annotation vẫn giữ event ID nguồn; task progress và nhãn belief chưa tự sinh.
+
+Nếu đã trích xong hai view bằng code trước, chỉ cần cập nhật rồi chạy CPU để bổ sung gaze/hand và xuất lại timeline/input, không chạy lại model:
+
+```python
+!python sensor_sync.py /content/drive/MyDrive/CoMind_REACTpp/recordings/RECORDING_ID
+```
+
+Có thể chạy thêm `--prepare-only` khi graph còn chưa xong để chỉ chuẩn bị clock metadata. Pipeline SGG hiện hành tự thực hiện cả chuẩn bị clock và ghép sensor khi hoàn tất recording.
 
 Đổi step trên CPU từ cùng graph gốc, không cần chạy lại REACT++:
 

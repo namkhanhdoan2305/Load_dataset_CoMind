@@ -45,7 +45,7 @@ Graph vẫn 5 FPS và giữ nguyên quy ước clock/timestamp/transcript. Track
 
 PSG có các quan hệ `in`, `on`, `holding`, `touching`, `cooking`... nhưng thiếu class riêng cho một số vật như `whisk`, `drawer`, `hand`. Code giữ nhãn gốc và dump đầy đủ vào `reactpp-model-info.json`; không tự tạo class hoặc đổi `in` thành `inside`.
 
-Tracker là heuristic bbox có vận tốc, giữ ID khi có match hợp lệ và vắng tối đa 1 giây. Chưa có appearance re-ID, hình học 3D hoặc matching cùng vật giữa hai view. Object đã ra khỏi view rồi quay lại lâu có thể có ID mới. Trạng thái task, nhãn belief, ánh xạ gaze/hand sang MP4 và kiểm chứng audio/video vật lý vẫn là các phần chưa hoàn tất đã nêu trong báo cáo đồng bộ.
+Tracker là heuristic bbox có vận tốc, giữ ID khi có match hợp lệ và vắng tối đa 1 giây. Chưa có appearance re-ID, hình học 3D hoặc matching cùng vật giữa hai view. Object đã ra khỏi view rồi quay lại lâu có thể có ID mới. Gaze/hand đã có [ánh xạ timestamp được kiểm chứng](SENSOR_SYNC.md). Trạng thái task, nhãn belief và kiểm chứng audio/video vật lý vẫn là các phần chưa hoàn tất đã nêu trong báo cáo đồng bộ.
 
 Output mới ở `MyDrive/CoMind_REACTpp`. `--source-dir` chỉ đọc lại video ở thư mục nguồn cũ; không di chuyển file, không nhập graph/label cũ. Video tạm cùng work directory được xác minh rồi tái sử dụng. Thay model/settings trong cùng target gây lỗi thay vì ghép lẫn kết quả.
 

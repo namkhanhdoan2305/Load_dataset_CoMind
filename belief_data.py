@@ -10,6 +10,7 @@ from pathlib import Path
 import comind_download as source
 from comind_to_hf import write_json_atomic
 from time_contract import clock_id, graph_time_us, microseconds
+from sensor_sync import SensorAligner
 
 
 def speech_events(recording):
@@ -70,7 +71,7 @@ def export_recording(recording, context_seconds=10, step_stride=1):
     recent = []
     emissions = []
     context_us = microseconds(context_seconds)
-    with gzip.open(streams["leader"], "rt") as leader, \
+    with SensorAligner(recording) as sensors, gzip.open(streams["leader"], "rt") as leader, \
             gzip.open(streams["helper"], "rt") as helper, gzip.open(temporary, "wt") as output:
         while True:
             a, b = leader.readline(), helper.readline()
@@ -111,6 +112,7 @@ def export_recording(recording, context_seconds=10, step_stride=1):
                 next_event += 1
             recent = [event for event in recent + new_events
                       if robot_us - event["available_us"] <= context_us]
+            gaze, hands = sensors.attach(human, robot_us)
             row = {"schema_version": 1, "recording_id": recording.name,
                    "step_index": count, "source_step_index": source_index, "time_s": timestamp,
                    "time_us": robot_us, "clock_id": clock_id(recording.name),
@@ -119,8 +121,8 @@ def export_recording(recording, context_seconds=10, step_stride=1):
                    "robot_observation_graph": robot, "human_observation_graph": human,
                    "new_speech_events": new_events,
                    "recent_speech_event_ids": [event["event_id"] for event in recent],
-                   "gaze_features": None, "hand_features": None,
-                   "sensor_alignment": "unresolved",
+                   "gaze_features": gaze, "hand_features": hands,
+                   "sensor_alignment": "metadata_clock_mapped" if sensors.mapping else "unresolved",
                    "source_time_interval": {"previous_s": previous_time, "current_s": timestamp},
                    "speech_interval_policy": "All completed segments since previous retained step; emit once"}
             output.write(json.dumps(row, allow_nan=False) + "\n")
@@ -128,6 +130,24 @@ def export_recording(recording, context_seconds=10, step_stride=1):
     if not count:
         raise ValueError("Cannot export an empty graph sequence")
     temporary.replace(folder / "steps.jsonl.gz")
+    sensor_report = sensors.report()
+    write_json_atomic(folder / "sensor_alignment.json", sensor_report)
+    aligned = bool(sensor_report["clock_mapping_verified"] and sensor_report["all_sensor_sources_present"]
+                   and graph_pts_verified and all(
+                       (recording / "transcripts" / f"{stream}_trimmed_sync_transcript.json").exists()
+                       for stream in ("leader", "helper")))
+    sync["all_modalities_aligned"] = aligned
+    sync["sensor_clock_mapping"] = {"path": "sensor-clock.json", "verified": sensor_report["clock_mapping_verified"]}
+    sync["sensor_clock_mapping_verified"] = sensor_report["clock_mapping_verified"]
+    sync["all_sensor_sources_present"] = sensor_report["all_sensor_sources_present"]
+    sync["sensor_source_availability"] = {name: stats["present"] for name, stats in sensor_report["modalities"].items()}
+    sync["alignment_scope"] = "Timestamp mapping; published synced MP4/transcript plus verified MPS device-clock anchors"
+    sync["physical_audio_video_alignment_verified"] = False
+    for group in ("leader_gaze", "leader_hands"):
+        clock = sync.get("sensor_clocks", {}).get(group)
+        if clock and sensor_report["clock_mapping_verified"] and clock.get("mapping_to_mp4"):
+            clock["mapping_to_mp4"] = "verified_metadata_anchors"
+    write_json_atomic(sync_path, sync)
     speech_audit = {
         "recording_id": recording.name, "clock_id": clock_id(recording.name),
         "clock_alignment": "as_published_trimmed_sync_transcript",
@@ -151,8 +171,13 @@ def export_recording(recording, context_seconds=10, step_stride=1):
             label_count = sum(bool(line.strip()) for line in handle)
     manifest = {"recording_id": recording.name, "steps": count, "speech_events": len(events),
                 "context_seconds": context_seconds,
-                "sensor_alignment": sync.get("all_modalities_aligned", False),
-                "all_modalities_aligned": sync.get("all_modalities_aligned", False),
+                "sensor_alignment": aligned,
+                "all_modalities_aligned": aligned,
+                "sensor_clock_mapping_verified": sensor_report["clock_mapping_verified"],
+                "all_sensor_sources_present": sensor_report["all_sensor_sources_present"],
+                "sensor_alignment_report": "sensor_alignment.json",
+                "sensor_alignment_sha256": source.file_digest(folder / "sensor_alignment.json"),
+                "sensor_join_policy": sensor_report["join_policy"],
                 "clock_id": clock_id(recording.name), "timestamp_unit": "microseconds",
                 "decoder_pts_verified": bool(graph_pts_verified),
                 "base_graph_steps": source_count, "step_stride": step_stride,
@@ -199,7 +224,8 @@ def iter_training_steps(recording, require_sensor_alignment=True, step_stride=1)
     if not labels:
         raise ValueError("No supervised belief labels supplied")
     if require_sensor_alignment and not manifest.get("all_modalities_aligned", False):
-        raise ValueError("Multimodal clock alignment is unresolved. For an explicitly graph/speech-only "
+        raise ValueError("Multimodal clock alignment is unresolved or required sources/verified PTS are missing. "
+                         "For an explicitly graph/speech-only "
                          "experiment use require_sensor_alignment=False")
     if source.file_digest(inputs) != manifest["steps_sha256"]:
         raise ValueError("Training input hash changed")

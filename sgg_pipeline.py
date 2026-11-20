@@ -30,6 +30,9 @@ def fingerprint(data):
 def write_sync_report(target, rid):
     """Report source clocks explicitly; never guess sensor offset from its first row."""
     folder = Path(target) / "recordings" / rid
+    mapping_path = folder / "sensor-clock.json"
+    mapping = json.loads(mapping_path.read_text()) if mapping_path.exists() else {}
+    verified = mapping.get("status") == "verified_metadata_anchors"
     clocks = {}
     for group, name in [("leader_gaze", "general_eye_gaze.csv"),
                         ("leader_hands", "hand_tracking_results.csv")]:
@@ -41,7 +44,7 @@ def write_sync_report(target, rid):
                              "timestamp_column": "tracking_timestamp_us",
                              "clock_id": f"comind:{rid}:leader_device_time",
                              "first_source_timestamp_us": first.get("tracking_timestamp_us"),
-                             "mapping_to_mp4": "unresolved"}
+                             "mapping_to_mp4": "verified_metadata_anchors" if verified else "unresolved"}
         else:
             clocks[group] = {"status": "missing_source_modality"}
     report = {"recording_id": rid, "video_clock": "published synced MP4 relative seconds",
@@ -52,6 +55,7 @@ def write_sync_report(target, rid):
               "transcript_clock": "source start/end seconds in trimmed_sync transcript",
               "annotations": "original event identifiers retained; no inferred frame/time conversion",
               "sensor_clocks": clocks, "all_modalities_aligned": False}
+    report["sensor_clock_mapping"] = {"path": "sensor-clock.json", "verified": verified}
     download.write_json_atomic(folder / "sync-status.json", report)
 
 
@@ -62,6 +66,9 @@ def link_graph_views(target, rid):
     count = 0
     max_delta_us = 0
     pts_verified = True
+    mapping_path = folder / "sensor-clock.json"
+    mapping_verified = (mapping_path.exists() and
+                        json.loads(mapping_path.read_text()).get("status") == "verified_metadata_anchors")
     words = []
     untimed_words = 0
     for stream in ("leader", "helper"):
@@ -70,7 +77,7 @@ def link_graph_views(target, rid):
             continue
         for segment_index, segment in enumerate(json.loads(transcript.read_text()).get("segments", [])):
             for word_index, word in enumerate(segment.get("words", [])):
-                if "start" in word and "end" in word:
+                if word.get("start") is not None and word.get("end") is not None:
                     start_us, end_us = microseconds(word["start"]), microseconds(word["end"])
                     if end_us < start_us:
                         raise ValueError(f"Invalid word timestamps in {transcript}")
@@ -108,7 +115,7 @@ def link_graph_views(target, rid):
                                      "leader_sample_index": a["sample_index"],
                                      "helper_sample_index": b["sample_index"],
                                      "completed_transcript_words": elapsed_words,
-                                     "sensor_alignment": "unresolved; see sync-status.json"}) + "\n")
+                                     "sensor_alignment": "metadata_clock_mapped" if mapping_verified else "unresolved"}) + "\n")
             count += 1
     os.replace(temporary, folder / "graphs/timeline.jsonl.gz")
     sync_path = folder / "sync-status.json"
@@ -296,7 +303,7 @@ def extract_view(video, folder, settings, video_hash, view, model, deadline,
                                source_pts_us=sample.get("source_pts_us", microseconds(sample["time_s"])),
                                clock_id=clock_id(Path(folder).parents[1].name),
                                pts_verified=sample.get("pts_verified", False),
-                               sensor_alignment="unresolved; see sync-status.json",
+                               sensor_alignment="external_mapping; see recording sensor-clock.json",
                                source_video_sha256=video_hash,
                                source_width=sample["source_width"], source_height=sample["source_height"])
                 progress = commit_chunk(folder, progress, rows, carry, next_id)
@@ -402,6 +409,8 @@ def main(argv=None):
                 continue
             if not set(video_paths.values()).issubset(entries):
                 raise ValueError(f"Missing required paired videos: {man['url_id']}")
+            from sensor_sync import prepare_clock
+            prepare_clock(target / "recordings" / man["url_id"], man)
             write_sync_report(target, man["url_id"])
             for view, path in video_paths.items():
                 if time.monotonic() >= deadline:
