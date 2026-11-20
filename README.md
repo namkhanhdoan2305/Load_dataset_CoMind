@@ -2,6 +2,10 @@
 
 Tải bộ CoMind chọn lọc trên Colab CPU, lưu vào Google Drive hoặc chuyển tới Hugging Face. Máy cá nhân chỉ mở notebook.
 
+## Thử SGG trên hai recording
+
+Đọc [SGG_COLAB_GUIDE.md](SGG_COLAB_GUIDE.md) để cài model trên Colab T4 và chạy `python sgg_pipeline.py --sessions 2 --keep-videos`. Graph xuất 5 FPS/view, tracking 10 FPS, lưu Drive và tiếp tục được theo checkpoint. Hai graph liên kết theo mốc MP4. Gaze/hand vẫn cần ánh xạ clock cảm biến sang MP4, trạng thái được ghi rõ trong `sync-status.json`. Hướng dẫn có cấu trúc đầu ra và cell xem graph sau khi chạy.
+
 ## Tải trước 30 phiên vào Google Drive
 
 Mở Colab runtime CPU, chạy lần lượt các cell. Phần tải Drive dùng thư viện chuẩn Python có sẵn.
