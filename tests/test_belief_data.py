@@ -55,7 +55,7 @@ class BeliefDataTests(unittest.TestCase):
     def test_loader_yields_all_steps_but_labels_only_at_labeled_time(self):
         self.labels()
         belief_data.export_recording(self.recording)
-        rows = list(belief_data.iter_training_steps(self.recording))
+        rows = list(belief_data.iter_training_steps(self.recording, require_sensor_alignment=False))
         self.assertEqual([len(labels) for row, labels in rows], [0, 0, 1, 0])
         self.assertEqual(rows[2][1][0]["allowed_location_ids"], ["B", "C"])
         self.assertNotIn("allowed_location_ids", rows[2][0])
@@ -64,12 +64,26 @@ class BeliefDataTests(unittest.TestCase):
         self.labels(timestamp=0.35)
         belief_data.export_recording(self.recording)
         with self.assertRaisesRegex(ValueError, "graph grid"):
-            next(belief_data.iter_training_steps(self.recording))
+            next(belief_data.iter_training_steps(self.recording, require_sensor_alignment=False))
 
     def test_speech_ids_are_stable_on_reexport(self):
         a = belief_data.speech_events(self.recording)
         b = belief_data.speech_events(self.recording)
         self.assertEqual(a, b)
+
+    def test_multimodal_training_rejects_unresolved_sensor_clock_by_default(self):
+        self.labels()
+        belief_data.export_recording(self.recording)
+        with self.assertRaisesRegex(ValueError, "clock alignment is unresolved"):
+            next(belief_data.iter_training_steps(self.recording))
+
+    def test_export_stamps_same_clock_and_integer_microseconds(self):
+        belief_data.export_recording(self.recording)
+        with gzip.open(self.recording / "belief_inputs/steps.jsonl.gz", "rt") as handle:
+            rows = [json.loads(line) for line in handle]
+        self.assertEqual([row["time_us"] for row in rows], [0, 200000, 400000, 600000])
+        self.assertEqual(rows[2]["clock_id"], rows[2]["new_speech_events"][0]["clock_id"])
+        self.assertEqual(rows[2]["new_speech_events"][0]["available_us"], 300000)
 
 
 if __name__ == "__main__":

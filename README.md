@@ -8,6 +8,8 @@ Tải bộ CoMind chọn lọc trên Colab CPU, lưu vào Google Drive hoặc ch
 
 Sau khi hoàn tất mỗi recording, `belief_inputs/steps.jsonl.gz` và `speech_events.json` cung cấp các bước tuần tự để xây dựng encoder belief. Sự kiện lời nói hoàn tất được phát một lần, có ID và thời điểm, giữ ngữ cảnh 10 giây bằng tham chiếu. Nhãn belief được gán riêng; xem hướng dẫn về `belief_data.iter_training_steps` để đọc dữ liệu và nhãn.
 
+Mốc graph dùng `clock_id`, `time_us` số nguyên trên lưới 200000 us và `source_pts_us` từ decoder. PTS hoặc clock sai sẽ gây dừng. Trạng thái `all_modalities_aligned=false` hiện chặn loader train đa phương thức mặc định cho tới khi gaze/hand có ánh xạ clock được kiểm chứng. Xem hướng dẫn về thí nghiệm chỉ dùng graph/lời nói.
+
 ## Tải trước 30 phiên vào Google Drive
 
 Mở Colab runtime CPU, chạy lần lượt các cell. Phần tải Drive dùng thư viện chuẩn Python có sẵn.

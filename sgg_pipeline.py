@@ -17,6 +17,7 @@ import comind_download as source
 import comind_to_hf as download
 from load_comind_drive import select_sessions
 from sgg_models import OBJECTS, PREDICATES
+from time_contract import clock_id, graph_time_us, microseconds
 
 
 DEFAULT_SETTINGS = {
@@ -48,11 +49,14 @@ def write_sync_report(target, rid):
                 first = next(csv.DictReader(handle), {})
             clocks[group] = {"path": str(path.relative_to(target)),
                              "timestamp_column": "tracking_timestamp_us",
+                             "clock_id": f"comind:{rid}:leader_device_time",
                              "first_source_timestamp_us": first.get("tracking_timestamp_us"),
                              "mapping_to_mp4": "unresolved"}
         else:
             clocks[group] = {"status": "missing_source_modality"}
     report = {"recording_id": rid, "video_clock": "published synced MP4 relative seconds",
+              "clock_id": clock_id(rid), "timestamp_unit": "microseconds",
+              "graph_pairing": {"status": "not_checked"},
               "graph_grid_seconds": 0.2,
               "object_ids": "view-local; cross-view entity matching remains unresolved",
               "transcript_clock": "source start/end seconds in trimmed_sync transcript",
@@ -66,6 +70,8 @@ def link_graph_views(target, rid):
     folder = Path(target) / "recordings" / rid
     temporary = folder / "graphs" / "timeline.jsonl.gz.tmp"
     count = 0
+    max_delta_us = 0
+    pts_verified = True
     words = []
     for stream in ("leader", "helper"):
         transcript = folder / "transcripts" / f"{stream}_trimmed_sync_transcript.json"
@@ -87,13 +93,19 @@ def link_graph_views(target, rid):
             if not left or not right:
                 raise ValueError("Paired graph streams have different lengths; inspect source synchronization")
             a, b = json.loads(left), json.loads(right)
-            if abs(a["time_s"] - b["time_s"]) > 0.001:
+            a_us, b_us = graph_time_us(a, rid), graph_time_us(b, rid)
+            delta_us = abs(a.get("source_pts_us", a_us) - b.get("source_pts_us", b_us))
+            max_delta_us = max(max_delta_us, delta_us)
+            pts_verified = pts_verified and a.get("pts_verified", False) and b.get("pts_verified", False)
+            if a_us != b_us or delta_us > 1000:
                 raise ValueError("Paired graph timestamps disagree; keep videos for inspection")
             elapsed_words = []
             while next_word < len(words) and words[next_word]["end"] <= a["time_s"]:
                 elapsed_words.append(words[next_word])
                 next_word += 1
             output.write(json.dumps({"recording_id": rid, "time_s": a["time_s"],
+                                     "time_us": a_us, "clock_id": clock_id(rid),
+                                     "pair_delta_us": delta_us,
                                      "leader_row": count, "helper_row": count,
                                      "leader_sample_index": a["sample_index"],
                                      "helper_sample_index": b["sample_index"],
@@ -101,6 +113,13 @@ def link_graph_views(target, rid):
                                      "sensor_alignment": "unresolved; see sync-status.json"}) + "\n")
             count += 1
     os.replace(temporary, folder / "graphs/timeline.jsonl.gz")
+    sync_path = folder / "sync-status.json"
+    if sync_path.exists():
+        sync = json.loads(sync_path.read_text())
+        sync["graph_pairing"] = {"status": "paired", "pairs": count,
+                                 "max_delta_us": max_delta_us, "tolerance_us": 1000,
+                                 "decoder_pts_verified": bool(pts_verified)}
+        download.write_json_atomic(sync_path, sync)
     return count
 
 
@@ -203,10 +222,10 @@ class VideoReader:
 
     def decode(self, start, end, folder, max_side):
         times = []
-        cursor = round(start * self.fps / self.tracking_fps)
+        cursor = math.floor(start * self.fps / self.tracking_fps + 1e-9)
         self.capture.set(self.cv2.CAP_PROP_POS_FRAMES, cursor)
         for local_index, sample_index in enumerate(range(start, end + 1)):
-            source_index = round(sample_index * self.fps / self.tracking_fps)
+            source_index = math.floor(sample_index * self.fps / self.tracking_fps + 1e-9)
             while cursor < source_index:
                 if not self.capture.grab():
                     raise RuntimeError(f"Failed to skip source frame {cursor}")
@@ -215,14 +234,24 @@ class VideoReader:
             if not ok:
                 raise RuntimeError(f"Failed to decode source frame {source_index}")
             cursor += 1
+            pts_s = self.capture.get(self.cv2.CAP_PROP_POS_MSEC) / 1000
+            expected_s = source_index / self.fps
+            if not math.isfinite(pts_s) or pts_s < 0 or abs(pts_s - expected_s) > 0.001:
+                raise RuntimeError(
+                    f"Decoder timestamp disagrees with CFR timeline at frame {source_index}: "
+                    f"PTS={pts_s}s, frame/fps={expected_s}s. Keep video for timestamp inspection")
             original_h, original_w = image.shape[:2]
             scale = min(1, max_side / max(original_h, original_w))
             if scale < 1:
                 image = self.cv2.resize(image, (round(original_w * scale), round(original_h * scale)))
             if not self.cv2.imwrite(str(Path(folder) / f"{local_index:06d}.jpg"), image):
                 raise RuntimeError("Failed to save a temporary frame")
+            grid_time_us = round(sample_index * 1_000_000 / self.tracking_fps)
+            if microseconds(pts_s) > grid_time_us + 1000:
+                raise RuntimeError("Decoded frame would expose a future image on the requested graph grid")
             times.append({"sample_index": sample_index, "source_frame_index": source_index,
-                          "time_s": source_index / self.fps,
+                          "time_s": grid_time_us / 1_000_000, "time_us": grid_time_us,
+                          "source_pts_us": microseconds(pts_s), "pts_verified": True,
                           "source_width": original_w, "source_height": original_h})
         return times
 
@@ -255,6 +284,10 @@ def extract_view(video, folder, settings, video_hash, view, model, deadline,
                     sample = next(t for t in times if t["sample_index"] == row["sample_index"])
                     row.update(recording_clock="synced_mp4_relative_seconds",
                                recording_id=Path(folder).parents[1].name,
+                               time_s=sample["time_s"], time_us=microseconds(sample["time_s"]),
+                               source_pts_us=sample.get("source_pts_us", microseconds(sample["time_s"])),
+                               clock_id=clock_id(Path(folder).parents[1].name),
+                               pts_verified=sample.get("pts_verified", False),
                                sensor_alignment="unresolved; see sync-status.json",
                                source_video_sha256=video_hash,
                                source_width=sample["source_width"], source_height=sample["source_height"])
@@ -266,7 +299,7 @@ def extract_view(video, folder, settings, video_hash, view, model, deadline,
         if progress["node_count"] == 0 or progress["edge_count"] == 0:
             raise RuntimeError(f"No usable object/relation output in {folder}; keep source video for inspection")
         progress.update(complete=True, source_fps=reader.fps, source_frame_count=reader.frames,
-                        timestamp_basis="CFR frame_index / source_fps; synced MP4 origin")
+                        timestamp_basis="Canonical session grid; source_pts_us from decoder, CFR validated")
         if source.file_digest(Path(folder) / "graphs.jsonl.gz") != progress["sha256"]:
             raise RuntimeError(f"Final graph stream hash verification failed: {folder}")
         download.write_json_atomic(Path(folder) / "progress.json",

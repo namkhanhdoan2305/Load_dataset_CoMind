@@ -9,6 +9,7 @@ from pathlib import Path
 
 import comind_download as source
 from comind_to_hf import write_json_atomic
+from time_contract import clock_id, graph_time_us, microseconds
 
 
 def speech_events(recording):
@@ -27,6 +28,9 @@ def speech_events(recording):
                 f"{Path(recording).name}|{stream}|{index}|{start}|{end}".encode()).hexdigest()[:24]
             events.append({"event_id": event_id, "audio_stream": stream,
                            "segment_index": index, "start_s": start, "available_s": end,
+                           "start_us": microseconds(start), "available_us": microseconds(end),
+                           "clock_id": clock_id(Path(recording).name),
+                           "clock_alignment": "as_published_trimmed_sync_transcript",
                            "text": segment.get("text", ""),
                            "speaker_ids": sorted({str(w["speaker"]) for w in segment.get("words", [])
                                                   if "speaker" in w}),
@@ -53,6 +57,8 @@ def export_recording(recording, context_seconds=10):
     sync = json.loads(sync_path.read_text()) if sync_path.exists() else {}
     temporary = folder / "steps.jsonl.gz.tmp"
     count, next_event, previous_time = 0, 0, -1
+    previous_us = -1
+    graph_pts_verified = True
     recent = []
     with gzip.open(streams["leader"], "rt") as leader, \
             gzip.open(streams["helper"], "rt") as helper, gzip.open(temporary, "wt") as output:
@@ -64,16 +70,22 @@ def export_recording(recording, context_seconds=10):
                 raise ValueError("Paired streams have unequal lengths")
             human, robot = json.loads(a), json.loads(b)
             timestamp = robot["time_s"]
-            if abs(human["time_s"] - timestamp) > 0.001 or timestamp <= previous_time:
+            human_us = graph_time_us(human, recording.name)
+            robot_us = graph_time_us(robot, recording.name)
+            graph_pts_verified = graph_pts_verified and human.get("pts_verified", False) and robot.get("pts_verified", False)
+            source_delta = abs(human.get("source_pts_us", human_us) - robot.get("source_pts_us", robot_us))
+            if human_us != robot_us or source_delta > 1000 or robot_us <= previous_us:
                 raise ValueError("Paired graph timestamps are invalid")
             new_events = []
-            while next_event < len(events) and events[next_event]["available_s"] <= timestamp:
+            while next_event < len(events) and events[next_event]["available_us"] <= robot_us:
                 new_events.append(events[next_event])
                 next_event += 1
             recent = [event for event in recent + new_events
                       if timestamp - event["available_s"] <= context_seconds]
             row = {"schema_version": 1, "recording_id": recording.name,
                    "step_index": count, "time_s": timestamp,
+                   "time_us": robot_us, "clock_id": clock_id(recording.name),
+                   "graph_pair_delta_us": source_delta,
                    "sequence_start": count == 0,
                    "robot_observation_graph": robot, "human_observation_graph": human,
                    "new_speech_events": new_events,
@@ -82,7 +94,7 @@ def export_recording(recording, context_seconds=10):
                    "sensor_alignment": "unresolved",
                    "source_time_interval": {"previous_s": previous_time, "current_s": timestamp}}
             output.write(json.dumps(row, allow_nan=False) + "\n")
-            previous_time, count = timestamp, count + 1
+            previous_time, previous_us, count = timestamp, robot_us, count + 1
     temporary.replace(folder / "steps.jsonl.gz")
     labels = recording / "labels" / "belief_labels.jsonl"
     label_count = 0
@@ -92,6 +104,9 @@ def export_recording(recording, context_seconds=10):
     manifest = {"recording_id": recording.name, "steps": count, "speech_events": len(events),
                 "context_seconds": context_seconds,
                 "sensor_alignment": sync.get("all_modalities_aligned", False),
+                "all_modalities_aligned": sync.get("all_modalities_aligned", False),
+                "clock_id": clock_id(recording.name), "timestamp_unit": "microseconds",
+                "decoder_pts_verified": bool(graph_pts_verified),
                 "cross_view_entity_matching": "unresolved",
                 "labels_path": "../labels/belief_labels.jsonl", "label_count": label_count,
                 "steps_sha256": source.file_digest(folder / "steps.jsonl.gz"),
@@ -104,9 +119,11 @@ def export_recording(recording, context_seconds=10):
     return manifest
 
 
-def iter_training_steps(recording):
+def iter_training_steps(recording, require_sensor_alignment=True):
     """Yield every time step for recurrent state updates, with zero or more labeled queries."""
     recording = Path(recording)
+    inputs = recording / "belief_inputs" / "steps.jsonl.gz"
+    manifest = json.loads((inputs.parent / "manifest.json").read_text())
     path = recording / "labels" / "belief_labels.jsonl"
     if not path.exists():
         raise ValueError(f"Supply verified belief labels at {path} before supervised training")
@@ -126,8 +143,9 @@ def iter_training_steps(recording):
         labels.setdefault(round(timestamp * 1e6), []).append(label)
     if not labels:
         raise ValueError("No supervised belief labels supplied")
-    inputs = recording / "belief_inputs" / "steps.jsonl.gz"
-    manifest = json.loads((inputs.parent / "manifest.json").read_text())
+    if require_sensor_alignment and not manifest.get("all_modalities_aligned", False):
+        raise ValueError("Multimodal clock alignment is unresolved. For an explicitly graph/speech-only "
+                         "experiment use require_sensor_alignment=False")
     if source.file_digest(inputs) != manifest["steps_sha256"]:
         raise ValueError("Training input hash changed")
     with gzip.open(inputs, "rt") as handle:

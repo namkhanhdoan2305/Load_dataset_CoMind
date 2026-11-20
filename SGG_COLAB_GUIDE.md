@@ -126,6 +126,10 @@ Trước khi mở rộng 30 phiên, xem số node/edge, ID tracking, các quan h
 
 ## Dữ liệu đầu vào cho encoder belief
 
+Quy ước thời gian dùng `clock_id = comind:<recording_ID>:synced_mp4` và số nguyên `time_us`. Graph 5 FPS nằm trên lưới 0, 200000, 400000... microsecond. `source_pts_us` giữ PTS decoder của frame thực tế; khi FPS lẻ, chọn frame ở trước hoặc tại mốc lưới. Timestamp decoder được đối chiếu CFR, sai khác quá 1 ms gây dừng. Khi nối hai graph, mốc lưới phải giống nhau và sai khác source PTS giữa hai view tối đa 1 ms. Đây là kiểm tra nhãn thời gian trên các MP4 được tác giả cung cấp, chưa thay thế kiểm chứng đồng bộ toàn bộ cảm biến.
+
+Lời nói có `start_us`, `available_us` và cùng clock ID theo giả định nguồn transcript `trimmed_sync`. Gaze/hand có clock riêng `comind:<ID>:leader_device_time`. `sync-status.json` giữ trạng thái chưa ánh xạ và `all_modalities_aligned=false`. `decoder_pts_verified` trong manifest cho biết graph có qua kiểm tra PTS decoder hay là bản xuất cũ chưa có kiểm tra này.
+
 Sau mỗi recording hoàn tất, pipeline tự xuất ba file trong `recordings/<ID>/belief_inputs/`.
 
 - `steps.jsonl.gz` chứa một bước tại mỗi mốc 0,2 giây, hai graph quan sát, sự kiện lời nói mới và ID ngữ cảnh gần đây.
@@ -148,6 +152,6 @@ for inputs, labeled_queries in iter_training_steps(recording_directory):
     pass
 ```
 
-Loader giữ nhãn ngoài inputs và dừng nếu chưa có nhãn hoặc thời điểm không khớp. Pipeline chưa cung cấp bộ nhãn belief tự động. Hai nguồn audio có thể thu cùng một lời nói; provenance được giữ để kiểm tra tương quan trước khi dùng làm bằng chứng độc lập. Bản đầu phát toàn bộ segment sau khi segment kết thúc; phân tích mệnh đề tăng dần là bước phát triển tiếp.
+Loader giữ nhãn ngoài inputs và dừng nếu chưa có nhãn hoặc thời điểm không khớp. Mặc định loader cũng dừng khi `all_modalities_aligned=false`. Với thí nghiệm được xác định rõ chỉ dùng graph và lời nói, truyền `require_sensor_alignment=False`; đặc trưng gaze/hand vẫn để null. Pipeline chưa cung cấp bộ nhãn belief tự động. Hai nguồn audio có thể thu cùng một lời nói; provenance được giữ để kiểm tra tương quan trước khi dùng làm bằng chứng độc lập. Bản đầu phát toàn bộ segment sau khi segment kết thúc; phân tích mệnh đề tăng dần là bước phát triển tiếp.
 
 Nguồn model [Grounding DINO](https://github.com/IDEA-Research/GroundingDINO), [SAM2](https://github.com/facebookresearch/sam2), [RelateAnything](https://github.com/Maelic/RelateAnything). Dữ liệu và đồng bộ do tác giả mô tả tại [CoMind](https://comind.ethz.ch/) và [paper, phần 3.3](https://arxiv.org/html/2607.06691v1#S3.SS3).
