@@ -1,4 +1,4 @@
-"""Extract resumable 5-FPS graph streams for two CoMind sessions on Colab."""
+"""Extract resumable 5-FPS REACT++/YOLO graph streams on Colab."""
 
 import argparse
 import csv
@@ -16,21 +16,11 @@ os.environ.setdefault("TQDM_DISABLE", "1")
 import comind_download as source
 import comind_to_hf as download
 from load_comind_drive import select_sessions
-from sgg_models import OBJECTS, PREDICATES
+from reactpp_models import SETTINGS
 from time_contract import clock_id, graph_time_us, microseconds
 
 
-DEFAULT_SETTINGS = {
-    "schema_version": 1, "graph_fps": 5, "tracking_fps": 10,
-    "chunk_seconds": 4, "max_side": 960, "max_objects": 20,
-    "max_relations": 100, "detection_threshold": 0.3,
-    "objects": OBJECTS, "predicates": PREDICATES,
-    "models": {
-        "detector": {"id": "IDEA-Research/grounding-dino-tiny"},
-        "tracker": {"id": "facebook/sam2.1-hiera-small"},
-        "relation": {"id": "maelic/relsgg-convnext-base"},
-    },
-}
+DEFAULT_SETTINGS = SETTINGS
 
 
 def fingerprint(data):
@@ -331,23 +321,22 @@ def resolved_settings(target):
     path = Path(target) / "sgg-settings.json"
     if path.exists():
         settings = json.loads(path.read_text())
-        for name, value in DEFAULT_SETTINGS.items():
-            if name != "models" and settings[name] != value:
-                raise ValueError("Existing SGG settings differ; use another target for this configuration")
+        if settings != DEFAULT_SETTINGS:
+            raise ValueError("Existing SGG settings differ (possibly old DINO/SAM2 graphs). "
+                             "Use a separate target such as /content/drive/MyDrive/CoMind_REACTpp")
         return settings
-    from huggingface_hub import HfApi
     settings = json.loads(json.dumps(DEFAULT_SETTINGS))
-    for model in settings["models"].values():
-        model["revision"] = HfApi().model_info(model["id"]).sha
     download.write_json_atomic(path, settings)
     return settings
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--sessions", type=int, default=2)
+    parser.add_argument("--sessions", type=int, default=1)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--target", default="/content/drive/MyDrive/CoMind")
+    parser.add_argument("--target", default="/content/drive/MyDrive/CoMind_REACTpp")
+    parser.add_argument("--source-dir", default="/content/drive/MyDrive/CoMind",
+                        help="Read-only reuse of previously downloaded videos; never moves/deletes those files")
     parser.add_argument("--work-dir", default="/content/comind-sgg-work")
     parser.add_argument("--max-hours", type=float, default=5)
     parser.add_argument("--dry-run", action="store_true")
@@ -366,21 +355,22 @@ def main(argv=None):
         if work == target or work.is_relative_to(target) or target.is_relative_to(work):
             parser.error("Use separate temporary work and persistent target directories")
         try:
-            import torch
-            if not torch.cuda.is_available():
-                parser.error("Choose a GPU runtime (T4) before extraction")
+            import onnxruntime as ort
+            if "CUDAExecutionProvider" not in ort.get_available_providers():
+                parser.error("Choose a T4 runtime and install the GPU ONNX Runtime in requirements-sgg.txt")
         except ImportError:
             parser.error("Install requirements-sgg.txt in the Colab GPU runtime first")
     plan = download.make_plan(ids, allow_missing=True)
     if args.dry_run:
-        print("Settings: graph 5 FPS, tracking 10 FPS, 4-second resumable chunks")
+        print("Settings: REACT++ YOLO12m ONNX + bbox tracker, graph/tracking 5 FPS, 4-second chunks")
         return
     target.mkdir(parents=True, exist_ok=True)
     work.mkdir(parents=True, exist_ok=True)
     deadline = time.monotonic() + args.max_hours * 3600
     settings = resolved_settings(target)
-    from sgg_models import Perception
+    from reactpp_models import Perception
     model = Perception(settings)  # Check models/runtime before any large payload transfer.
+    download.write_json_atomic(target / "reactpp-model-info.json", model.info)
     video_paths = {"leader": download.GROUPS["leader_video"][0],
                    "helper": download.GROUPS["helper_video"][0]}
     status = {"recordings": ids, "completed": [], "state": "running", "current": None}
@@ -429,8 +419,11 @@ def main(argv=None):
                     continue
                 existing = download.grouped_destination(target, man, entry)
                 old = target / man["dest_subpath"] / path
+                source_root = Path(args.source_dir).resolve()
+                prior_grouped = download.grouped_destination(source_root, man, entry)
+                prior_old = source_root / man["dest_subpath"] / path
                 video = work / man["url_id"] / path
-                persistent = next((p for p in (existing, old) if p.is_file()
+                persistent = next((p for p in (existing, old, prior_grouped, prior_old) if p.is_file()
                                    and p.stat().st_size == entry["size"]
                                    and source.file_digest(p, man["hash_algorithm"]) == entry["hash"]), None)
                 if persistent is not None:

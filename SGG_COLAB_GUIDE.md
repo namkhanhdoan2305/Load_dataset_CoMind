@@ -1,67 +1,75 @@
-# Chạy thử SGG và review một recording trước
+# Chạy một recording với REACT++ + YOLO
 
-Pipeline dùng Grounding DINO Tiny, SAM2.1 Small và RelateAnything ConvNeXt-Base pretrained. Graph xuất ở **5 FPS cho mỗi view**, tracking chạy **10 FPS**. Video nguồn 30 FPS tương ứng graph tại frame 0, 6, 12, 18... Ảnh được giảm cạnh dài về tối đa 960 pixel, tọa độ box đi kèm kích thước ảnh đã giảm và ảnh nguồn để chuyển đổi lại.
+Pipeline hiện dùng **REACT++ YOLO12m ONNX**, detector và relation head trong cùng checkpoint. Tracker bbox giữ ID theo nhãn, IoU và vận tốc; graph/tracking đều 5 FPS, không chạy SAM2. Checkpoint khóa revision và SHA256. Xem [kiểm chứng tích hợp](REACTPP_VALIDATION.md).
 
-Đây là bản thử kỹ thuật. Luồng lưu/tiếp tục và liên kết thời gian đã được kiểm tra bằng video và graph giả lập. Cần chạy trên Colab T4 để kiểm tra model inference thực tế, tốc độ, bộ nhớ và chất lượng graph trên CoMind.
+Kết quả mới lưu vào **`MyDrive/CoMind_REACTpp`** để giữ riêng graph của pipeline DINO/SAM2 cũ. Không ghép tiếp graph cũ bằng model mới. Video cũ trên ổ tạm Colab được kiểm tra hash rồi tái sử dụng; video có sẵn trong `MyDrive/CoMind` cũng được đọc lại, không di chuyển/xóa.
 
-**Trạng thái đồng bộ đầy đủ còn thiếu.** Hai graph được kiểm tra và liên kết bằng giây tương đối của hai MP4 `trimmed_sync`. Transcript giữ thời gian start/end từ nguồn và từ đã kết thúc được ghép vào timeline. Gaze/hand giữ `tracking_timestamp_us` gốc. Chưa có ánh xạ được kiểm chứng từ đồng hồ cảm biến sang MP4 nên các giá trị này được ghi `unresolved` trong `sync-status.json`. Mã không tự coi timestamp gaze đầu tiên là giây 0. Annotation giữ event ID gốc và chưa chuyển ID này thành giây/frame. Cần giải quyết ánh xạ thời gian và kiểm chứng gaze/hand trước khi dùng làm cue đồng bộ cho belief.
+## Chuyển từ lượt đang chạy
 
-## Các cell Colab
-
-Chọn runtime **GPU T4**. Nếu đã clone repo, chạy cell cập nhật này.
+Dừng cell SGG cũ bằng nút Stop trước, giữ nguyên runtime để còn video đã tải. Sau đó chạy các cell sau theo thứ tự. Không cần cài lại SAM2, RelateAnything hoặc Transformers.
 
 ```python
 %cd /content/Load_dataset_CoMind
 !git pull --ff-only
 ```
 
-Với runtime mới, clone repo trước.
+Nếu là runtime mới, clone và mount Drive trước:
 
 ```python
 !git clone https://github.com/namkhanhdoan2305/Load_dataset_CoMind.git /content/Load_dataset_CoMind
 %cd /content/Load_dataset_CoMind
 ```
 
-Mount đúng tài khoản Drive.
-
 ```python
 from google.colab import drive
 drive.mount('/content/drive')
 ```
 
-Cài dependencies model. File requirements khóa commit mã nguồn của RelateAnything và SAM2. Upstream RelateAnything yêu cầu Python 3.12 trở lên, PyTorch và Transformers theo các phiên bản do tác giả khai báo. Lệnh cài có thể cập nhật các thư viện này trong runtime. Lệnh chạy inference bên dưới dùng tiến trình Python mới.
+Chọn GPU T4. Gỡ bản ONNX Runtime cũ nếu có để tránh hai package CPU/GPU cùng cung cấp một module. Requirements mới khóa ONNX Runtime GPU 1.26.0, CUDA 12/cuDNN 9; cài thêm runtime libraries từ extras khi cần. Wheel Linux hỗ trợ Python 3.13 đã được kiểm tra trên PyPI. CUDA 12 libraries được preload trước khi tạo session.
 
 ```python
-%pip install -r requirements-sgg.txt
+!python -m pip uninstall -y onnxruntime onnxruntime-gpu
+!python -m pip install -r requirements-sgg.txt
 ```
 
-Chạy trước đúng một recording đầu của cùng danh sách seed 42 dùng khi tải 30 recording. Xem [báo cáo review đồng bộ](PIPELINE_REVIEW.md) trước khi quyết định mở rộng.
+Chạy đúng một recording. `-u` in log ngay, `--keep-videos` giữ video tạm để đối chiếu sau.
 
 ```python
-!python sgg_pipeline.py --sessions 1 --keep-videos
+!python -u sgg_pipeline.py \
+    --sessions 1 \
+    --seed 42 \
+    --max-hours 5 \
+    --target /content/drive/MyDrive/CoMind_REACTpp \
+    --source-dir /content/drive/MyDrive/CoMind \
+    --keep-videos
 ```
 
-`--keep-videos` giữ video tạm trên Colab cho lần thử để có thể xem lại. Dùng `--target` nếu dữ liệu trước đó được tải vào thư mục khác.
+Khi gián đoạn, chạy lại cùng lệnh để tiếp tục checkpoint **REACT++** đã commit. Source dir chỉ tái sử dụng video, không nhập graph DINO/SAM2 cũ. Nếu video còn trong `/content/comind-sgg-work/<ID>/mp4s/` thì downloader xác minh rồi bỏ qua tải lại; nếu runtime đã mất thì có thể cần tải lại video. Ngân sách kiểm tra giữa file/chunk, một chunk đang xử lý có thể vượt mốc.
 
-```python
-!python sgg_pipeline.py --sessions 1 --keep-videos \
-    --target /content/drive/MyDrive/HRC_NCKH/CoMind
-```
+Một recording không tương đương video 1 phút: recording đầu seed 42 `8ee6c694-38be-4a90-ad5a-75ef4449e972` có hai video, mỗi video **28 phút 23,6 giây, 30 FPS**, khoảng 8.518 graph/view. Thời gian trên T4 cần đo thực tế.
 
-Mặc định ngân sách xử lý là 5 giờ, kiểm tra trước mỗi file và mỗi chunk. Một file đang tải hoặc chunk đang xử lý có thể làm lượt chạy vượt mốc này. Khi hết ngân sách, chạy lại đúng lệnh để tiếp tục. Dữ liệu đã commit được kiểm tra hash rồi bỏ qua. Video tạm có thể cần tải lại khi Colab reset, các graph đã commit trên Drive vẫn được tiếp tục.
-
-## Đầu vào và nơi lưu
-
-Mặc định Drive root là `/content/drive/MyDrive/CoMind`. Mã tái sử dụng video đã có ở cấu trúc downloader hiện tại hoặc cấu trúc cũ sau khi kiểm tra hash. Nếu cần tải video mới, file nằm trong `/content/comind-sgg-work/<recording_ID>/mp4s/` của máy ảo Colab. Video có sẵn trên Drive được giữ nguyên.
-
-Khi bỏ `--keep-videos`, chỉ video tạm do pipeline tải mới được xóa sau khi cả hai graph hoàn tất, hash hợp lệ và timeline hai view khớp. Quá trình tải sáu nhóm dữ liệu nguồn bằng `load_comind_drive.py` vẫn hoạt động như trước; lệnh SGG là `sgg_pipeline.py`.
+## Log để kiểm tra
 
 ```text
-MyDrive/CoMind/
+REACT++ ready: providers=['CUDAExecutionProvider', 'CPUExecutionProvider'], ...
+leader: source ... frames @ 30.000 FPS, duration approximately 1703.6s, 426 chunks, ...
+leader: chunk 1/426 decoded 21 samples in ...s
+leader: REACT++ 1 graphs, elapsed=...s
+leader: REACT++ 10 graphs, elapsed=...s
+leader: chunk 1/426, ... chunk took ...s
+```
+
+CUDA provider phải khởi tạo thành công; code dừng nếu session rơi hoàn toàn về CPU. CPU provider trong danh sách vẫn có thể xử lý các toán tử phụ trợ; không có nghĩa cả model chạy CPU. Cần log throughput thực tế để đánh giá. Pipeline không upload dataset lên Hugging Face; chỉ tải checkpoint ONNX khoảng **116,8 MB** từ đó.
+
+## Thư mục kết quả
+
+```text
+MyDrive/CoMind_REACTpp/
   sgg-settings.json
+  reactpp-model-info.json             # Model SHA, ORT version, providers, toàn bộ nhãn
   sgg-status.json
-  annotations/                           # Ba JSON chung gốc
-  metadata/<recording_ID>/               # Manifest, danh sách nguồn đã chọn
+  metadata/<recording_ID>/
+  annotations/                       # Ba annotation chung gốc
   recordings/<recording_ID>/
     leader_gaze/general_eye_gaze.csv
     leader_hands/hand_tracking_results.csv
@@ -73,10 +81,8 @@ MyDrive/CoMind/
       interaction_anticipation.json
       handover.json
     graphs/
-      leader/graphs.jsonl.gz
-      leader/progress.json
-      helper/graphs.jsonl.gz
-      helper/progress.json
+      leader/{graphs.jsonl.gz, progress.json}
+      helper/{graphs.jsonl.gz, progress.json}
       timeline.jsonl.gz
     sync-status.json
     belief_inputs/
@@ -86,87 +92,27 @@ MyDrive/CoMind/
       manifest.json
 ```
 
-Phiên thiếu hand tracking có báo cáo `missing_source_modality`, không tạo dữ liệu tay giả để lấp chỗ trống.
+Video mới tải nằm ở `/content/comind-sgg-work/<ID>/mp4s/`, không tự sao lưu lên Drive. Bỏ `--keep-videos` sẽ xóa video tạm sau khi hai view và export hoàn tất; video đã có trên Drive vẫn giữ nguyên.
 
-## Nội dung graph
+Mỗi graph giữ bbox theo ảnh giảm cạnh dài tối đa 960 px, kích thước nguồn, timestamp frame nguồn, node ID namespace theo view, nhãn native checkpoint và score. ONNX letterbox về 640 để inference, bbox được đổi ngược về ảnh 960 trước khi lưu. Relation có `score` của predicate và `triplet_score` riêng; lọc theo triplet score >=0,1. Object score >=0,25; tối đa 40 object và 100 relation/frame. Không diễn giải các score là độ chắc chắn đã hiệu chuẩn.
 
-Mỗi dòng giải nén của `graphs.jsonl.gz` là một JSON graph tại một thời điểm. Các trường chính gồm `recording_id`, `view`, `time_s`, `source_frame_index`, kích thước ảnh, `nodes` và `edges`. Node có ID theo view, nhãn detector, box xyxy, điểm detector và thời điểm detector gần nhất. Edge có subject, relation, object và điểm quan hệ của model.
+Checkpoint có **133 nhãn object, 56 predicate foreground**. Giữ toàn bộ từ vựng nguồn, ví dụ `in`, `on`, `holding`, `touching`; không đổi `in` thành `inside` hoặc tự gán nhãn ngoài checkpoint. Một số vật/cấu trúc bếp như whisk, drawer, hand không có class riêng trong checkpoint PSG. `reactpp-model-info.json` giữ danh sách đầy đủ để kiểm tra độ phủ trên CoMind.
 
-Các quan hệ của bản thử là `on`, `inside`, `holding`, `touching`. Detector dùng danh sách đồ vật bếp trong `sgg-settings.json`, tối đa 20 track mỗi chunk. Score của model được giữ nguyên để đánh giá/hiệu chỉnh trên dữ liệu gán tay, chưa được diễn giải thành xác suất chính xác trên CoMind.
+Tracker chỉ phát node thực sự có detection hiện tại. Track vắng tạm được giữ tối đa 1 giây để ghép lại; không phát vật bị mất detection thành quan sát giả. Đây là matching bbox có thể đổi ID khi che khuất, chuyển động nhanh hoặc vật giống nhau. Hai view chưa ghép ID cùng vật. Model quan sát leader dùng làm teacher/oracle theo thiết kế thí nghiệm, không phải nhãn belief.
 
-SAM2 chỉ theo dõi tiến theo thời gian. ID giữa các chunk được nối bằng frame biên chung và matching IoU theo nhãn, đây là heuristic có thể lỗi sau che khuất hoặc với các đồ vật giống nhau. ID của hai view được đặt namespace riêng. Ghép hai node cùng một vật giữa leader/helper cần bước đối chiếu riêng.
+## Đồng bộ và input belief
 
-Mỗi view chỉ có một file graph gzip, dù xử lý theo chunk 4 giây. Checkpoint ghi số graph, tổng node/edge, mốc cuối, carry tracking, hash và byte offset đã commit. Chunk cuối bị ngắt được tính lại, timeline tránh lặp mốc ở biên chunk.
+Mốc graph vẫn là `time_us = 0, 200000, 400000...`, `clock_id = comind:<ID>:synced_mp4`. Giữ PTS decoder; kiểm tra CFR và chênh PTS giữa hai view tối đa 1 ms. Transcript phát segment một lần sau end; giữ ID context và báo độ trễ trong `speech_alignment.json`. Đồng bộ vật lý audio/video cần kiểm tra bằng session thật.
 
-`timeline.jsonl.gz` liên kết row leader và helper ở cùng `time_s`, sai khác cho phép tối đa 1 ms. File còn chứa `completed_transcript_words`, gồm các từ có thời điểm kết thúc không muộn hơn mốc graph và `audio_stream` tương ứng. `audio_stream` cho biết nguồn transcript; speaker ID vẫn giữ theo nguồn, chưa được suy thành danh tính leader/helper. Gaze/hand chưa được ghép vào graph khi đồng hồ chưa có ánh xạ.
+Gaze/hand giữ CSV gốc với clock thiết bị riêng; chưa ánh xạ sang MP4 nên feature đang null, `all_modalities_aligned=false`. Annotation giữ event ID nguồn; task graph/progress và nhãn belief chưa được tự sinh. Loader supervised vẫn yêu cầu nhãn riêng và chặn multimodal train mặc định khi clock chưa giải quyết.
 
-## Kiểm tra kết quả trên Colab
-
-```python
-from pathlib import Path
-import gzip
-import json
-from load_comind_drive import select_sessions
-
-root = Path('/content/drive/MyDrive/CoMind')
-for rid in select_sessions(1):
-    folder = root / 'recordings' / rid
-    print('RECORDING', rid)
-    for view in ('leader', 'helper'):
-        progress = folder / 'graphs' / view / 'progress.json'
-        if not progress.exists():
-            print(view, 'đang chờ xử lý')
-            continue
-        state = json.loads(progress.read_text())
-        print(view, {k: state[k] for k in
-                     ('complete', 'graph_count', 'node_count', 'edge_count', 'last_time_s')})
-        with gzip.open(progress.parent / 'graphs.jsonl.gz', 'rt') as handle:
-            print('Graph đầu tiên', json.loads(next(handle)))
-    sync = folder / 'sync-status.json'
-    if sync.exists():
-        print('Đồng bộ', json.loads(sync.read_text()))
-```
-
-Trước khi mở rộng 30 phiên, xem số node/edge, ID tracking, các quan hệ dự đoán và thời gian mỗi chunk. Phiên hoàn tất SGG sẽ có `complete: true` ở cả hai `progress.json`. `all_modalities_aligned` hiện vẫn là `false` vì còn thiếu ánh xạ cảm biến.
-
-## Dữ liệu đầu vào cho encoder belief
-
-Quy ước thời gian dùng `clock_id = comind:<recording_ID>:synced_mp4` và số nguyên `time_us`. Graph 5 FPS nằm trên lưới 0, 200000, 400000... microsecond. `source_pts_us` giữ PTS decoder của frame thực tế; khi FPS lẻ, chọn frame ở trước hoặc tại mốc lưới. Timestamp decoder được đối chiếu CFR, sai khác quá 1 ms gây dừng. Khi nối hai graph, mốc lưới phải giống nhau và sai khác source PTS giữa hai view tối đa 1 ms. Đây là kiểm tra nhãn thời gian trên các MP4 được tác giả cung cấp, chưa thay thế kiểm chứng đồng bộ toàn bộ cảm biến.
-
-Lời nói có `start_us`, `available_us` và cùng clock ID theo giả định nguồn transcript `trimmed_sync`. Gaze/hand có clock riêng `comind:<ID>:leader_device_time`. `sync-status.json` giữ trạng thái chưa ánh xạ và `all_modalities_aligned=false`. `decoder_pts_verified` trong manifest cho biết graph có qua kiểm tra PTS decoder hay là bản xuất cũ chưa có kiểm tra này.
-
-Sau mỗi recording hoàn tất, pipeline tự xuất bốn file trong `recordings/<ID>/belief_inputs/`.
-
-- `steps.jsonl.gz` chứa một bước tại mỗi mốc 0,2 giây, hai graph quan sát, sự kiện lời nói mới và ID ngữ cảnh gần đây.
-- `speech_events.json` chứa transcript segment hoàn tất, `event_id` ổn định, start/end, nguồn audio và text. Segment được phát một lần tại bước đầu tiên có `time_s >= available_s`. Ngữ cảnh 10 giây giữ tham chiếu, bộ nhớ belief của encoder phải được truyền qua các bước. Dữ liệu giữ văn bản để có thể thay text encoder sau này.
-- `manifest.json` ghi số bước, số sự kiện, hash và tình trạng nhãn/đồng bộ. `gaze_features` và `hand_features` hiện là null vì timestamp cảm biến chưa được ánh xạ. Graph quan sát human chưa có ý nghĩa là nhãn belief.
-- `speech_alignment.json` ghi segment nào được đưa vào step nào, `available_us`, `first_emitted_us`, độ trễ do step, độ dài segment và các sự kiện chưa phát ở cuối phiên. Cờ kiểm chứng đồng bộ audio/video vật lý vẫn là false cho tới khi có bước kiểm tra độc lập.
-
-Nếu đã có graph và chỉ cần xuất định dạng đầu vào mới, chạy lệnh CPU sau với ID recording thực tế.
+Đổi step trên CPU từ cùng graph gốc, không cần chạy lại REACT++:
 
 ```python
-!python belief_data.py /content/drive/MyDrive/CoMind/recordings/RECORDING_ID
+!python belief_data.py /content/drive/MyDrive/CoMind_REACTpp/recordings/RECORDING_ID --step-stride 2
+!python belief_data.py /content/drive/MyDrive/CoMind_REACTpp/recordings/RECORDING_ID --step-stride 5
 ```
 
-Để so độ dài step, giữ graph gốc 5 FPS và xuất thêm trên CPU. Stride 2 tạo bước 0,4 giây; stride 5 tạo bước 1 giây. Hai thư mục mới `belief_inputs_stride_2/` và `belief_inputs_stride_5/` có cùng bốn file và giữ nguyên timestamp nguồn. Lời nói hoàn tất giữa hai bước được gom đầy đủ vào bước giữ lại kế tiếp. Không lấy đơn giản `rows[::stride]` từ file steps cũ vì sẽ mất sự kiện. Loader nhận `step_stride=2` hoặc `5` để đọc đúng phiên bản.
+Hai bản thêm nằm ở `belief_inputs_stride_2/` (0,4 s) và `belief_inputs_stride_5/` (1 s). Gom đầy đủ speech event giữa các bước; không dùng `rows[::stride]`. So 5 / 2,5 / 1 FPS tại mốc chung mỗi 2 giây, cùng query/nhãn và split recording. Sự kiện cuối chưa tới bước kế tiếp được báo trong audit.
 
-```python
-!python belief_data.py /content/drive/MyDrive/CoMind/recordings/RECORDING_ID --step-stride 2
-!python belief_data.py /content/drive/MyDrive/CoMind/recordings/RECORDING_ID --step-stride 5
-```
-
-Các lưới 5 / 2,5 / 1 FPS có mốc chung mỗi 2 giây. Khi so sánh dùng cùng truy vấn/nhãn ở những mốc chung này, cùng tập chia theo recording, cùng model và cùng nguồn graph. Báo cáo sự kiện cuối phiên chưa được phát, độ trễ speech và chi phí encoder riêng. Chưa có task graph hoặc tiến trình nhiệm vụ theo thời gian trong bản xuất này; annotation gốc được giữ riêng và chưa ánh xạ event ID sang giây.
-
-Nhãn belief được cung cấp riêng tại `recordings/<ID>/labels/belief_labels.jsonl`, mỗi dòng một truy vấn được gán nhãn độc lập. Schema gồm `time_s`, `person_id`, `object_id`, `candidate_location_ids`, `allowed_location_ids`, `label_source`. Thời điểm nhãn phải khớp graph xuất. Tập allowed là vị trí được nhãn hỗ trợ, có thể gồm nhiều vị trí khi chỉ biết vật đã rời vị trí cũ. Người gán nhãn cần đối chiếu ID đồ vật và vị trí của từng view.
-
-```python
-from belief_data import iter_training_steps
-for inputs, labeled_queries in iter_training_steps(recording_directory):
-    # Truyền recurrent state theo thứ tự inputs['time_s'].
-    # Tính loss tại labeled_queries; bước không có nhãn vẫn cập nhật state.
-    pass
-```
-
-Loader giữ nhãn ngoài inputs và dừng nếu chưa có nhãn hoặc thời điểm không khớp. Mặc định loader cũng dừng khi `all_modalities_aligned=false`. Với thí nghiệm được xác định rõ chỉ dùng graph và lời nói, truyền `require_sensor_alignment=False`; đặc trưng gaze/hand vẫn để null. Pipeline chưa cung cấp bộ nhãn belief tự động. Hai nguồn audio có thể thu cùng một lời nói; provenance được giữ để kiểm tra tương quan trước khi dùng làm bằng chứng độc lập. Bản đầu phát toàn bộ segment sau khi segment kết thúc; phân tích mệnh đề tăng dần là bước phát triển tiếp.
-
-Nguồn model [Grounding DINO](https://github.com/IDEA-Research/GroundingDINO), [SAM2](https://github.com/facebookresearch/sam2), [RelateAnything](https://github.com/Maelic/RelateAnything). Dữ liệu và đồng bộ do tác giả mô tả tại [CoMind](https://comind.ethz.ch/) và [paper, phần 3.3](https://arxiv.org/html/2607.06691v1#S3.SS3).
+Nguồn: [REACT++](https://github.com/Maelic/SGG-Benchmark), [checkpoint PSG](https://huggingface.co/maelic/REACTPlusPlus_PSG), [ONNX Runtime CUDA](https://onnxruntime.ai/docs/execution-providers/CUDA-ExecutionProvider.html), [CoMind](https://comind.ethz.ch/).

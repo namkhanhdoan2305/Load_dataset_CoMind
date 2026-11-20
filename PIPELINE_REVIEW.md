@@ -1,5 +1,7 @@
 # Review dữ liệu và đồng bộ — 20/11/2026
 
+Đã cập nhật sang REACT++ YOLO12m ONNX + tracker bbox. Xem [hướng dẫn chạy hiện tại](SGG_COLAB_GUIDE.md). Các giới hạn đồng bộ bên dưới vẫn áp dụng.
+
 ## Kết luận kiểm tra mã
 
 Pipeline đã thống nhất clock MP4 theo recording và ghép transcript bằng thời gian gốc. Chưa thể xác nhận đồng bộ đầy đủ mọi modality. Kiểm tra mã và kiểm thử giả lập không thay thế việc xem kết quả một recording thật trên Colab.
@@ -21,7 +23,7 @@ Thứ tự các bước của task có thể cố định; thời điểm ngư�
 
 - `clock_id`: `comind:<recording_ID>:synced_mp4`.
 - `time_us`: số nguyên microsecond trên lưới 0, 200000, 400000...; `time_s` là cách biểu diễn cùng mốc bằng giây.
-- Tracking 10 FPS; graph 5 FPS. Với video CFR 30 FPS, graph dùng frame 0, 6, 12... Chọn frame nguồn trước hoặc tại mốc lưới khi FPS lẻ.
+- Tracking và graph đều 5 FPS. Với video CFR 30 FPS, graph dùng frame 0, 6, 12... Chọn frame nguồn trước hoặc tại mốc lưới khi FPS lẻ.
 - `source_pts_us` giữ timestamp decoder của frame thực tế. Code kiểm tra PTS với chỉ số frame/FPS, dung sai 1 ms; hai view phải cùng mốc lưới, chênh source PTS tối đa 1 ms. Đây là kiểm tra timestamp, không phải phép đo lại độ đồng bộ cảm biến.
 - Các clock bị trộn recording hoặc sai đơn vị bị từ chối. Hash graph và checkpoint được kiểm tra trước khi export.
 - Gaze/hand giữ `tracking_timestamp_us`, clock `comind:<ID>:leader_device_time`. Không trừ timestamp dòng đầu để giả định video bắt đầu ở đó.
@@ -48,10 +50,10 @@ Tên stream leader/helper chỉ nguồn ghi âm. Speaker ID giữ theo nguồn, 
 
 ## Thư mục sau khi hoàn thành một recording
 
-Đường dẫn mặc định trên Colab: `/content/drive/MyDrive/CoMind/`.
+Đường dẫn mặc định trên Colab: `/content/drive/MyDrive/CoMind_REACTpp/`.
 
 ```text
-CoMind/
+CoMind_REACTpp/
   sgg-settings.json                  # Cấu hình perception, model revision được khóa
   sgg-status.json                    # Trạng thái toàn lượt chạy, recording/view hiện hành
   annotations/                      # Ba JSON annotation nguồn dùng chung + metadata
@@ -107,8 +109,8 @@ Xem ít nhất vài đoạn ở đầu/giữa/cuối: caption đúng nội dung 
 ## So sánh độ dài step mà không chạy lại SGG
 
 ```python
-!python belief_data.py /content/drive/MyDrive/CoMind/recordings/8ee6c694-38be-4a90-ad5a-75ef4449e972 --step-stride 2
-!python belief_data.py /content/drive/MyDrive/CoMind/recordings/8ee6c694-38be-4a90-ad5a-75ef4449e972 --step-stride 5
+!python belief_data.py /content/drive/MyDrive/CoMind_REACTpp/recordings/8ee6c694-38be-4a90-ad5a-75ef4449e972 --step-stride 2
+!python belief_data.py /content/drive/MyDrive/CoMind_REACTpp/recordings/8ee6c694-38be-4a90-ad5a-75ef4449e972 --step-stride 5
 ```
 
 | Stride | Khoảng bước | Tần số | Thư mục |
@@ -125,6 +127,6 @@ So sánh này thay cả tần suất quan sát graph và cập nhật encoder; m
 
 ## Kiểm chứng hiện có
 
-47 kiểm thử tự động bằng dữ liệu nhỏ, video/perception giả lập đã qua: lọc đúng file nguồn, resume/hash, tách recording, clock/PTS, text không phát trước end, sự kiện phát một lần, gom speech khi đổi stride, báo tail, giữ graph gốc, từ chối nhãn sai lưới và chặn multimodal training khi clock chưa ánh xạ.
+62 kiểm thử tự động bằng dữ liệu nhỏ, video/perception giả lập đã qua: lọc đúng file nguồn, resume/hash, tách recording, clock/PTS, text không phát trước end, sự kiện phát một lần, gom speech khi đổi stride, báo tail, giữ graph gốc, từ chối nhãn sai lưới và chặn multimodal training khi clock chưa ánh xạ.
 
 Chưa có lượt inference model thật trên T4 trong môi trường này. Báo cáo chưa chứng nhận tốc độ, VRAM, chất lượng SGG hay đồng bộ vật lý của recording. Kết quả một session do người dùng chạy là bước kiểm chứng tiếp theo.

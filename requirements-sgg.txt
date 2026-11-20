@@ -1,3 +1,6 @@
-# Install in a Colab GPU runtime. Upstream packages resolve their supported versions.
-relsgg[hub] @ git+https://github.com/Maelic/RelateAnything.git@e4f65cc5d1085f731f3ffcde40fe7c2cccb298c4
-SAM-2 @ git+https://github.com/facebookresearch/sam2.git@2b90b9f5ceec907a1c18123530e92e794ad901a4
+# REACT++ YOLO12m ONNX; no SAM2, Grounding DINO or RelateAnything installation.
+# ORT >=1.27 defaults to CUDA 13; this pin uses CUDA 12 + cuDNN 9.
+onnxruntime-gpu[cuda,cudnn]==1.26.0
+opencv-python-headless>=4.10,<5
+numpy>=1.26,<3
+huggingface-hub>=0.34,<3

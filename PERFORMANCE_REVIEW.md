@@ -1,5 +1,7 @@
 # Kiểm tra tốc độ lượt Colab đầu — 20/11/2026
 
+Báo cáo này lưu số đo **pipeline DINO + SAM2 + RelateAnything cũ**. Pipeline hiện hành đã chuyển sang [REACT++ + YOLO](SGG_COLAB_GUIDE.md); xem [kiểm chứng tích hợp mới](REACTPP_VALIDATION.md). Không áp số đo bên dưới cho backend mới.
+
 ## Thời lượng recording đã xác minh
 
 Recording: `8ee6c694-38be-4a90-ad5a-75ef4449e972`.

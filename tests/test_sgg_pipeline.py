@@ -14,10 +14,13 @@ from sgg_models import match_detections
 
 class FakeVideo:
     def __init__(self, path, tracking_fps):
-        self.samples, self.fps, self.frames = 81, 30, 243
+        self.fps, self.frames = 30, 243
+        self.tracking_fps = tracking_fps
+        self.samples = (self.frames - 1) * tracking_fps // self.fps + 1
 
     def decode(self, start, end, folder, max_side):
-        return [{"sample_index": i, "source_frame_index": i * 3, "time_s": i / 10,
+        return [{"sample_index": i, "source_frame_index": i * self.fps // self.tracking_fps,
+                 "time_s": i / self.tracking_fps,
                  "source_width": 1408, "source_height": 1408} for i in range(start, end + 1)]
 
     def close(self):
