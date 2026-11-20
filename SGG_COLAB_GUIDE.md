@@ -1,4 +1,4 @@
-# Chạy thử SGG trên hai recording
+# Chạy thử SGG và review một recording trước
 
 Pipeline dùng Grounding DINO Tiny, SAM2.1 Small và RelateAnything ConvNeXt-Base pretrained. Graph xuất ở **5 FPS cho mỗi view**, tracking chạy **10 FPS**. Video nguồn 30 FPS tương ứng graph tại frame 0, 6, 12, 18... Ảnh được giảm cạnh dài về tối đa 960 pixel, tọa độ box đi kèm kích thước ảnh đã giảm và ảnh nguồn để chuyển đổi lại.
 
@@ -35,16 +35,16 @@ Cài dependencies model. File requirements khóa commit mã nguồn của Relate
 %pip install -r requirements-sgg.txt
 ```
 
-Chạy thử đúng hai recording đầu của cùng danh sách seed 42 dùng khi tải 30 recording.
+Chạy trước đúng một recording đầu của cùng danh sách seed 42 dùng khi tải 30 recording. Xem [báo cáo review đồng bộ](PIPELINE_REVIEW.md) trước khi quyết định mở rộng.
 
 ```python
-!python sgg_pipeline.py --sessions 2 --keep-videos
+!python sgg_pipeline.py --sessions 1 --keep-videos
 ```
 
 `--keep-videos` giữ video tạm trên Colab cho lần thử để có thể xem lại. Dùng `--target` nếu dữ liệu trước đó được tải vào thư mục khác.
 
 ```python
-!python sgg_pipeline.py --sessions 2 --keep-videos \
+!python sgg_pipeline.py --sessions 1 --keep-videos \
     --target /content/drive/MyDrive/HRC_NCKH/CoMind
 ```
 
@@ -79,6 +79,11 @@ MyDrive/CoMind/
       helper/progress.json
       timeline.jsonl.gz
     sync-status.json
+    belief_inputs/
+      steps.jsonl.gz
+      speech_events.json
+      speech_alignment.json
+      manifest.json
 ```
 
 Phiên thiếu hand tracking có báo cáo `missing_source_modality`, không tạo dữ liệu tay giả để lấp chỗ trống.
@@ -104,7 +109,7 @@ import json
 from load_comind_drive import select_sessions
 
 root = Path('/content/drive/MyDrive/CoMind')
-for rid in select_sessions(2):
+for rid in select_sessions(1):
     folder = root / 'recordings' / rid
     print('RECORDING', rid)
     for view in ('leader', 'helper'):
@@ -130,17 +135,27 @@ Quy ước thời gian dùng `clock_id = comind:<recording_ID>:synced_mp4` và s
 
 Lời nói có `start_us`, `available_us` và cùng clock ID theo giả định nguồn transcript `trimmed_sync`. Gaze/hand có clock riêng `comind:<ID>:leader_device_time`. `sync-status.json` giữ trạng thái chưa ánh xạ và `all_modalities_aligned=false`. `decoder_pts_verified` trong manifest cho biết graph có qua kiểm tra PTS decoder hay là bản xuất cũ chưa có kiểm tra này.
 
-Sau mỗi recording hoàn tất, pipeline tự xuất ba file trong `recordings/<ID>/belief_inputs/`.
+Sau mỗi recording hoàn tất, pipeline tự xuất bốn file trong `recordings/<ID>/belief_inputs/`.
 
 - `steps.jsonl.gz` chứa một bước tại mỗi mốc 0,2 giây, hai graph quan sát, sự kiện lời nói mới và ID ngữ cảnh gần đây.
 - `speech_events.json` chứa transcript segment hoàn tất, `event_id` ổn định, start/end, nguồn audio và text. Segment được phát một lần tại bước đầu tiên có `time_s >= available_s`. Ngữ cảnh 10 giây giữ tham chiếu, bộ nhớ belief của encoder phải được truyền qua các bước. Dữ liệu giữ văn bản để có thể thay text encoder sau này.
 - `manifest.json` ghi số bước, số sự kiện, hash và tình trạng nhãn/đồng bộ. `gaze_features` và `hand_features` hiện là null vì timestamp cảm biến chưa được ánh xạ. Graph quan sát human chưa có ý nghĩa là nhãn belief.
+- `speech_alignment.json` ghi segment nào được đưa vào step nào, `available_us`, `first_emitted_us`, độ trễ do step, độ dài segment và các sự kiện chưa phát ở cuối phiên. Cờ kiểm chứng đồng bộ audio/video vật lý vẫn là false cho tới khi có bước kiểm tra độc lập.
 
 Nếu đã có graph và chỉ cần xuất định dạng đầu vào mới, chạy lệnh CPU sau với ID recording thực tế.
 
 ```python
 !python belief_data.py /content/drive/MyDrive/CoMind/recordings/RECORDING_ID
 ```
+
+Để so độ dài step, giữ graph gốc 5 FPS và xuất thêm trên CPU. Stride 2 tạo bước 0,4 giây; stride 5 tạo bước 1 giây. Hai thư mục mới `belief_inputs_stride_2/` và `belief_inputs_stride_5/` có cùng bốn file và giữ nguyên timestamp nguồn. Lời nói hoàn tất giữa hai bước được gom đầy đủ vào bước giữ lại kế tiếp. Không lấy đơn giản `rows[::stride]` từ file steps cũ vì sẽ mất sự kiện. Loader nhận `step_stride=2` hoặc `5` để đọc đúng phiên bản.
+
+```python
+!python belief_data.py /content/drive/MyDrive/CoMind/recordings/RECORDING_ID --step-stride 2
+!python belief_data.py /content/drive/MyDrive/CoMind/recordings/RECORDING_ID --step-stride 5
+```
+
+Các lưới 5 / 2,5 / 1 FPS có mốc chung mỗi 2 giây. Khi so sánh dùng cùng truy vấn/nhãn ở những mốc chung này, cùng tập chia theo recording, cùng model và cùng nguồn graph. Báo cáo sự kiện cuối phiên chưa được phát, độ trễ speech và chi phí encoder riêng. Chưa có task graph hoặc tiến trình nhiệm vụ theo thời gian trong bản xuất này; annotation gốc được giữ riêng và chưa ánh xạ event ID sang giây.
 
 Nhãn belief được cung cấp riêng tại `recordings/<ID>/labels/belief_labels.jsonl`, mỗi dòng một truy vấn được gán nhãn độc lập. Schema gồm `time_s`, `person_id`, `object_id`, `candidate_location_ids`, `allowed_location_ids`, `label_source`. Thời điểm nhãn phải khớp graph xuất. Tập allowed là vị trí được nhãn hỗ trợ, có thể gồm nhiều vị trí khi chỉ biết vật đã rời vị trí cũ. Người gán nhãn cần đối chiếu ID đồ vật và vị trí của từng view.
 

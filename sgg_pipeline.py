@@ -73,15 +73,23 @@ def link_graph_views(target, rid):
     max_delta_us = 0
     pts_verified = True
     words = []
+    untimed_words = 0
     for stream in ("leader", "helper"):
         transcript = folder / "transcripts" / f"{stream}_trimmed_sync_transcript.json"
         if not transcript.exists():
             continue
-        for segment in json.loads(transcript.read_text()).get("segments", []):
-            for word in segment.get("words", []):
+        for segment_index, segment in enumerate(json.loads(transcript.read_text()).get("segments", [])):
+            for word_index, word in enumerate(segment.get("words", [])):
                 if "start" in word and "end" in word:
-                    words.append(dict(word, audio_stream=stream))
-    words.sort(key=lambda word: word["end"])
+                    start_us, end_us = microseconds(word["start"]), microseconds(word["end"])
+                    if end_us < start_us:
+                        raise ValueError(f"Invalid word timestamps in {transcript}")
+                    words.append(dict(word, audio_stream=stream, start_us=start_us, available_us=end_us,
+                                      segment_index=segment_index, word_index=word_index,
+                                      clock_id=clock_id(rid)))
+                else:
+                    untimed_words += 1
+    words.sort(key=lambda word: word["available_us"])
     next_word = 0
     with gzip.open(folder / "graphs/leader/graphs.jsonl.gz", "rt") as leader, \
             gzip.open(folder / "graphs/helper/graphs.jsonl.gz", "rt") as helper, \
@@ -100,7 +108,7 @@ def link_graph_views(target, rid):
             if a_us != b_us or delta_us > 1000:
                 raise ValueError("Paired graph timestamps disagree; keep videos for inspection")
             elapsed_words = []
-            while next_word < len(words) and words[next_word]["end"] <= a["time_s"]:
+            while next_word < len(words) and words[next_word]["available_us"] <= a_us:
                 elapsed_words.append(words[next_word])
                 next_word += 1
             output.write(json.dumps({"recording_id": rid, "time_s": a["time_s"],
@@ -119,6 +127,10 @@ def link_graph_views(target, rid):
         sync["graph_pairing"] = {"status": "paired", "pairs": count,
                                  "max_delta_us": max_delta_us, "tolerance_us": 1000,
                                  "decoder_pts_verified": bool(pts_verified)}
+        sync["transcript_words"] = {"timed_words": len(words), "untimed_words": untimed_words,
+                                    "emitted_words": next_word, "unemitted_timed_words": len(words) - next_word,
+                                    "clock_alignment": "as_published_trimmed_sync_transcript",
+                                    "physical_audio_video_alignment_verified": False}
         download.write_json_atomic(sync_path, sync)
     return count
 

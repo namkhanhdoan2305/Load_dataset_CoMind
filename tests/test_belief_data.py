@@ -85,6 +85,68 @@ class BeliefDataTests(unittest.TestCase):
         self.assertEqual(rows[2]["clock_id"], rows[2]["new_speech_events"][0]["clock_id"])
         self.assertEqual(rows[2]["new_speech_events"][0]["available_us"], 300000)
 
+    def test_stride_aggregates_intervening_speech_without_overwriting_base(self):
+        base = belief_data.export_recording(self.recording)
+        coarse = belief_data.export_recording(self.recording, step_stride=3)
+        folder = self.recording / "belief_inputs_stride_3"
+        with gzip.open(folder / "steps.jsonl.gz", "rt") as handle:
+            rows = [json.loads(line) for line in handle]
+        self.assertEqual([r["time_us"] for r in rows], [0, 600000])
+        self.assertEqual([len(r["new_speech_events"]) for r in rows], [0, 1])
+        self.assertEqual(rows[1]["new_speech_events"][0]["available_us"], 300000)
+        self.assertEqual(rows[1]["source_step_index"], 3)
+        self.assertEqual(base["source_graph_sha256"], coarse["source_graph_sha256"])
+        self.assertEqual(source.file_digest(self.recording / "belief_inputs/steps.jsonl.gz"), base["steps_sha256"])
+        audit = json.loads((folder / "speech_alignment.json").read_text())
+        self.assertEqual(audit["emissions"][0]["step_delay_us"], 300000)
+        self.assertEqual(coarse["step_period_us"], 600000)
+
+    def test_context_expiry_does_not_drop_new_events_on_coarse_steps(self):
+        belief_data.export_recording(self.recording, context_seconds=0, step_stride=3)
+        with gzip.open(self.recording / "belief_inputs_stride_3/steps.jsonl.gz", "rt") as handle:
+            rows = [json.loads(line) for line in handle]
+        self.assertEqual(len(rows[1]["new_speech_events"]), 1)
+        self.assertEqual(rows[1]["recent_speech_event_ids"], [])
+
+    def test_tail_speech_is_reported_without_future_emission(self):
+        path = self.recording / "transcripts/leader_trimmed_sync_transcript.json"
+        path.write_text(json.dumps({"segments": [{"start": 0.3, "end": 0.7, "text": "future"}]}))
+        manifest = belief_data.export_recording(self.recording)
+        self.assertEqual(manifest["speech_events_emitted"], 0)
+        self.assertEqual(manifest["speech_events_unemitted"], 1)
+        audit = json.loads((self.recording / "belief_inputs/speech_alignment.json").read_text())
+        self.assertEqual(audit["unemitted_events"][0]["available_us"], 700000)
+        self.assertFalse(audit["physical_audio_video_alignment_verified"])
+
+    def test_missing_segment_timestamps_fail_instead_of_losing_text(self):
+        path = self.recording / "transcripts/leader_trimmed_sync_transcript.json"
+        path.write_text(json.dumps({"segments": [{"text": "untimed text"}]}))
+        with self.assertRaisesRegex(ValueError, "Missing speech segment timestamps"):
+            belief_data.export_recording(self.recording)
+
+    def test_invalid_stride_is_rejected(self):
+        for stride in (0, -1, 1.5, True):
+            with self.assertRaisesRegex(ValueError, "positive integer"):
+                belief_data.export_recording(self.recording, step_stride=stride)
+
+    def test_coarse_labels_must_match_selected_grid(self):
+        self.labels(timestamp=0.4)
+        belief_data.export_recording(self.recording, step_stride=3)
+        with self.assertRaisesRegex(ValueError, "graph grid"):
+            next(belief_data.iter_training_steps(self.recording, require_sensor_alignment=False, step_stride=3))
+
+    def test_nonuniform_base_grid_fails_for_stride_comparisons(self):
+        for view in ("leader", "helper"):
+            folder = self.recording / "graphs" / view
+            path = folder / "graphs.jsonl.gz"
+            with gzip.open(path, "wt") as handle:
+                for timestamp in (0, 0.2, 0.5):
+                    handle.write(json.dumps({"time_s": timestamp}) + "\n")
+            (folder / "progress.json").write_text(json.dumps({
+                "complete": True, "sha256": source.file_digest(path)}))
+        with self.assertRaisesRegex(ValueError, "uniform"):
+            belief_data.export_recording(self.recording, step_stride=3)
+
 
 if __name__ == "__main__":
     unittest.main()
