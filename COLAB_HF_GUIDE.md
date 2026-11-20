@@ -106,7 +106,9 @@ Các số lượng và UUID đầu danh sách chỉ là ví dụ chạy pilot. D
 
 Thêm `--leader-calibration` để lấy `mps_leader_*/slam/online_calibration.jsonl`. Gaze MPS ở hệ tọa độ CPF; chiếu lên ảnh và đồng bộ với MP4 cần calibration và xử lý timestamp phù hợp. Liên kết hai view trong không gian 3D có thể cần thêm trajectory/pose, chưa nằm trong bộ sáu nhóm này.
 
-## Tổ chức dữ liệu
+## Tổ chức dữ liệu của bộ tải tổng quát
+
+Cấu trúc dưới đây áp dụng cho `comind_to_hf.py`. Preset `load_comind_drive.py` tổ chức theo sáu nhóm trong mỗi recording như README.
 
 ```text
 CoMind/

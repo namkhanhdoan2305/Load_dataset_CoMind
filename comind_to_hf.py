@@ -23,11 +23,14 @@ os.environ.setdefault("HF_XET_CHUNK_CACHE_SIZE_BYTES", "0")
 GROUPS = {
     "leader_video": ["mp4s/leader_trimmed_sync.mp4"],
     "helper_video": ["mp4s/helper_trimmed_sync.mp4"],
-    "leader_gaze": ["mps_leader_*/eye_gaze/*"],
-    "leader_hands": ["mps_leader_*/hand_tracking/*"],
-    "transcripts": ["transcripts/*"],
+    "leader_gaze": ["mps_leader_trimmed_vrs/eye_gaze/general_eye_gaze.csv"],
+    "leader_hands": ["mps_leader_trimmed_vrs/hand_tracking/hand_tracking_results.csv"],
+    "transcripts": ["transcripts/leader_trimmed_sync_transcript.json",
+                    "transcripts/helper_trimmed_sync_transcript.json"],
 }
-CALIBRATION = ["mps_leader_*/slam/online_calibration.jsonl"]
+CALIBRATION = ["mps_leader_trimmed_vrs/slam/online_calibration.jsonl"]
+ANNOTATIONS = ["dataset_joint_attention_consolidated.json",
+               "dataset_scoia_consolidated.json", "dataset_handover_consolidated.json"]
 
 
 def retry(operation, attempts=4):
@@ -44,7 +47,7 @@ def retry(operation, attempts=4):
 
 
 def make_plan(ids, base_url=source.DEFAULT_BASE_URL, calibration=False,
-              allow_missing=False):
+              allow_missing=False, show_files=False):
     """Read small manifests only. Never silently omit a failed recording."""
     if not ids or len(ids) != len(set(ids)):
         raise ValueError("Choose a nonempty list of unique recording IDs")
@@ -76,8 +79,18 @@ def make_plan(ids, base_url=source.DEFAULT_BASE_URL, calibration=False,
         print(f"[{index}/{len(ids)}] {rid}: "
               f"{man['total_size_bytes'] / 1e9:.3f} GB, "
               f"{len(man['files'])} files", flush=True)
+        if show_files:
+            for entry in man["files"]:
+                print(f"  {entry['path']} ({entry['size'] / 1e6:.3f} MB)")
     annotations = retry(lambda: source.fetch_manifest(
         base_url, "annotations", 60, dest_subpath="annotations"))
+    available_annotations = {entry["path"] for entry in annotations["files"]}
+    if not set(ANNOTATIONS).issubset(available_annotations):
+        raise ValueError("Required consolidated annotation files are missing from source")
+    source.filter_manifest_files([annotations], ANNOTATIONS, [])
+    if show_files:
+        for entry in annotations["files"]:
+            print(f"  annotations/{entry['path']} ({entry['size'] / 1e6:.3f} MB)")
     plan.insert(0, annotations)
     total = sum(man["total_size_bytes"] for man in plan)
     biggest = max(e["size"] for man in plan for e in man["files"])
@@ -156,7 +169,70 @@ def write_json_atomic(path, data):
     os.replace(temporary, path)
 
 
-def save_to_directory(plan, target, base_url=source.DEFAULT_BASE_URL, max_hours=None):
+def grouped_destination(target, man, entry):
+    if man["url_id"] == "annotations":
+        return Path(target) / "annotations" / entry["path"]
+    if entry["path"] in CALIBRATION:
+        group = "calibration"
+    else:
+        group = next(name for name, paths in GROUPS.items() if entry["path"] in paths)
+    return Path(target) / "recordings" / man["url_id"] / group / Path(entry["path"]).name
+
+
+def adopt_existing(old, dest, entry, algorithm):
+    """Reorganize only a selected payload, checking the copy before removing old bytes."""
+    if old == dest:
+        return
+    for suffix in ("", ".part"):
+        previous = Path(str(old) + suffix)
+        destination = Path(str(dest) + suffix)
+        if not previous.is_file():
+            continue
+        size = previous.stat().st_size
+        if size > entry["size"] or (not suffix and size != entry["size"]):
+            continue
+        digest = source.file_digest(previous, algorithm)
+        if not suffix and entry["hash"] and digest != entry["hash"]:
+            continue
+        if destination.exists():
+            if destination.stat().st_size == size and source.file_digest(destination, algorithm) == digest:
+                previous.unlink()
+                continue
+            if suffix:
+                continue
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        copying = Path(str(destination) + ".migrating")
+        shutil.copyfile(previous, copying)
+        if copying.stat().st_size != size or source.file_digest(copying, algorithm) != digest:
+            raise RuntimeError(f"Reorganization verification failed: {previous}")
+        os.replace(copying, destination)
+        previous.unlink()
+        print(f"REORGANIZED {previous} -> {destination}", flush=True)
+
+
+def split_annotations(plan, target):
+    """Retain official event IDs and values, including null test annotations."""
+    names = {"dataset_joint_attention_consolidated.json": "joint_attention.json",
+             "dataset_scoia_consolidated.json": "interaction_anticipation.json",
+             "dataset_handover_consolidated.json": "handover.json"}
+    for original, filename in names.items():
+        payload = json.loads((Path(target) / "annotations" / original).read_text())
+        if not isinstance(payload.get("data"), dict):
+            raise ValueError(f"Unsupported annotation structure: {original}")
+        for man in plan:
+            rid = man["url_id"]
+            if rid == "annotations":
+                continue
+            data = {"recording_id": rid, "source_file": original,
+                    "dataset_version": payload.get("dataset_version"),
+                    "file_timestamp": payload.get("file_timestamp"),
+                    "recording_present_in_source": rid in payload["data"],
+                    "data": payload["data"].get(rid, {})}
+            write_json_atomic(Path(target) / "recordings" / rid / "annotations" / filename, data)
+
+
+def save_to_directory(plan, target, base_url=source.DEFAULT_BASE_URL, max_hours=None,
+                      grouped=False):
     """Download into mounted Drive or another persistent directory, without HF."""
     target = Path(target)
     target.mkdir(parents=True, exist_ok=True)
@@ -172,11 +248,19 @@ def save_to_directory(plan, target, base_url=source.DEFAULT_BASE_URL, max_hours=
     try:
         for man in plan:
             folder = target / man["dest_subpath"]
+            if grouped and man["url_id"] != "annotations":
+                folder = target / "metadata" / man["url_id"]
+                for group in list(GROUPS) + ["annotations"]:
+                    (target / "recordings" / man["url_id"] / group).mkdir(parents=True, exist_ok=True)
             folder.mkdir(parents=True, exist_ok=True)
             (folder / "source-healthcheck.json").write_bytes(man["raw"])
             selected = {"source": base_url, "url_id": man["url_id"],
                         "hash_algorithm": man["hash_algorithm"], "files": man["files"],
                         "missing_modalities": man.get("missing_modalities", [])}
+            if grouped:
+                selected["destinations"] = {
+                    entry["path"]: str(grouped_destination(target, man, entry).relative_to(target))
+                    for entry in man["files"]}
             write_json_atomic(folder / "selection.json", selected)
             for entry in man["files"]:
                 if max_hours is not None and time.monotonic() - started >= max_hours * 3600:
@@ -185,6 +269,10 @@ def save_to_directory(plan, target, base_url=source.DEFAULT_BASE_URL, max_hours=
                     print("Time budget reached; rerun the same command to continue.")
                     return status
                 dest = folder / entry["path"]
+                if grouped:
+                    dest = grouped_destination(target, man, entry)
+                    old = target / man["dest_subpath"] / entry["path"]
+                    adopt_existing(old, dest, entry, man["hash_algorithm"])
                 status["current_file"] = str(dest.relative_to(target))
                 write_json_atomic(report, status)
                 print(f"DOWNLOAD / VERIFY {dest} ({entry['size'] / 1e9:.3f} GB)", flush=True)
@@ -197,6 +285,8 @@ def save_to_directory(plan, target, base_url=source.DEFAULT_BASE_URL, max_hours=
                       f"({status['verified_bytes'] / 1e9:.3f} GB)", flush=True)
             status["completed_groups"].append(man["url_id"])
             write_json_atomic(report, status)
+            if grouped and man["url_id"] == "annotations":
+                split_annotations(plan, target)
     except BaseException as exc:
         status["state"] = "interrupted" if isinstance(exc, KeyboardInterrupt) else "failed"
         status["error_type"] = type(exc).__name__
