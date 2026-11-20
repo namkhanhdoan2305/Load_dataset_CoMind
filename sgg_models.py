@@ -2,6 +2,7 @@
 
 import gc
 import inspect
+import time
 from pathlib import Path
 
 
@@ -60,6 +61,7 @@ class Perception:
 
         if not torch.cuda.is_available():
             raise RuntimeError("Choose a GPU runtime in Colab before extracting graphs")
+        print(f"Perception GPU: {torch.cuda.get_device_name(0)}", flush=True)
         self.torch, self.np, self.Image = torch, np, Image
         self.settings = settings
         detector = settings["models"]["detector"]
@@ -110,14 +112,22 @@ class Perception:
         keyframes = [i for i, sample in enumerate(times)
                      if sample["sample_index"] % graph_stride == 0 or i == 0]
         detections = {}
+        started = time.monotonic()
+        print(f"{view}: detector START, {len(keyframes)} keyframes", flush=True)
         self.detector.cuda()
         try:
-            for i in keyframes:
+            for completed, i in enumerate(keyframes, 1):
                 with self.Image.open(frames[i]) as image:
                     detections[i] = self.detect(image.convert("RGB"))
+                if completed == 1 or completed % 5 == 0 or completed == len(keyframes):
+                    print(f"{view}: detector {completed}/{len(keyframes)}, "
+                          f"elapsed={time.monotonic() - started:.1f}s", flush=True)
         finally:
             self.offload(self.detector)
+        print(f"{view}: detector DONE, {time.monotonic() - started:.1f}s", flush=True)
 
+        started = time.monotonic()
+        print(f"{view}: SAM2 START, {len(frames)} tracking frames", flush=True)
         self.tracker.cuda()
         graph_nodes = {}
         tracks = [dict(track) for track in carry]
@@ -126,6 +136,7 @@ class Perception:
         try:
             state = self.tracker.init_state(str(frame_folder), offload_video_to_cpu=True,
                                             offload_state_to_cpu=True)
+            print(f"{view}: SAM2 state ready, elapsed={time.monotonic() - started:.1f}s", flush=True)
             for i in range(len(frames)):
                 # Carry comes from the exact shared boundary frame of the previous chunk.
                 if i == 0:
@@ -163,11 +174,17 @@ class Perception:
                     del mask_logits, masks
                 if i in keyframes:
                     graph_nodes[i] = [dict(track) for track in tracks]
+                if i == 0 or (i + 1) % 10 == 0 or i == len(frames) - 1:
+                    print(f"{view}: SAM2 {i + 1}/{len(frames)}, {len(known)} allocated tracks, "
+                          f"elapsed={time.monotonic() - started:.1f}s", flush=True)
         finally:
             del state
             self.offload(self.tracker)
+        print(f"{view}: SAM2 DONE, {time.monotonic() - started:.1f}s", flush=True)
 
         rows = []
+        started = time.monotonic()
+        print(f"{view}: relations START", flush=True)
         self.relation.model.cuda()
         self.relation.device = self.torch.device("cuda")
         try:
@@ -195,7 +212,11 @@ class Perception:
                              "image_width": width, "image_height": height,
                              "nodes": [dict(node, id=node_id) for node, node_id in zip(nodes, ids)],
                              "edges": edges})
+                if len(rows) == 1 or len(rows) % 5 == 0:
+                    print(f"{view}: relations {len(rows)} graphs, "
+                          f"elapsed={time.monotonic() - started:.1f}s", flush=True)
         finally:
             self.offload(self.relation.model)
             self.relation.device = self.torch.device("cpu")
+        print(f"{view}: relations DONE, {len(rows)} graphs, {time.monotonic() - started:.1f}s", flush=True)
         return rows, tracks, next_id

@@ -280,6 +280,9 @@ def extract_view(video, folder, settings, video_hash, view, model, deadline,
     reader = reader_class(video, settings["tracking_fps"])
     step = settings["tracking_fps"] * settings["chunk_seconds"]
     chunks = max(1, math.ceil((reader.samples - 1) / step))
+    print(f"{view}: source {reader.frames} frames @ {reader.fps:.3f} FPS, "
+          f"duration approximately {reader.frames / reader.fps:.1f}s, "
+          f"{chunks} chunks, resuming chunk {progress['next_chunk'] + 1}", flush=True)
     stride = settings["tracking_fps"] // settings["graph_fps"]
     try:
         while progress["next_chunk"] < chunks:
@@ -289,7 +292,10 @@ def extract_view(video, folder, settings, video_hash, view, model, deadline,
             start, end = index * step, min((index + 1) * step, reader.samples - 1)
             chunk_started = time.monotonic()
             with tempfile.TemporaryDirectory(prefix="comind-frames-") as temporary:
+                print(f"{view}: chunk {index + 1}/{chunks} decoding source frames", flush=True)
                 times = reader.decode(start, end, temporary, settings["max_side"])
+                print(f"{view}: chunk {index + 1}/{chunks} decoded {len(times)} samples "
+                      f"in {time.monotonic() - chunk_started:.1f}s", flush=True)
                 rows, carry, next_id = model.chunk(
                     temporary, times, view, progress["carry"], progress["next_id"], stride)
                 for row in rows:
