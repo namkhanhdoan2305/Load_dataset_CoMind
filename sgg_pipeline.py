@@ -395,6 +395,8 @@ def main(argv=None):
                     download.write_json_atomic(report, status)
                     return
             link_graph_views(target, man["url_id"])
+            from belief_data import export_recording
+            export_recording(target / "recordings" / man["url_id"])
             # Both view streams and their timestamp pairing passed checks before cleanup.
             for view, path in video_paths.items():
                 candidate = work / man["url_id"] / path

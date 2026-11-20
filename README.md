@@ -6,6 +6,8 @@ Tải bộ CoMind chọn lọc trên Colab CPU, lưu vào Google Drive hoặc ch
 
 Đọc [SGG_COLAB_GUIDE.md](SGG_COLAB_GUIDE.md) để cài model trên Colab T4 và chạy `python sgg_pipeline.py --sessions 2 --keep-videos`. Graph xuất 5 FPS/view, tracking 10 FPS, lưu Drive và tiếp tục được theo checkpoint. Hai graph liên kết theo mốc MP4. Gaze/hand vẫn cần ánh xạ clock cảm biến sang MP4, trạng thái được ghi rõ trong `sync-status.json`. Hướng dẫn có cấu trúc đầu ra và cell xem graph sau khi chạy.
 
+Sau khi hoàn tất mỗi recording, `belief_inputs/steps.jsonl.gz` và `speech_events.json` cung cấp các bước tuần tự để xây dựng encoder belief. Sự kiện lời nói hoàn tất được phát một lần, có ID và thời điểm, giữ ngữ cảnh 10 giây bằng tham chiếu. Nhãn belief được gán riêng; xem hướng dẫn về `belief_data.iter_training_steps` để đọc dữ liệu và nhãn.
+
 ## Tải trước 30 phiên vào Google Drive
 
 Mở Colab runtime CPU, chạy lần lượt các cell. Phần tải Drive dùng thư viện chuẩn Python có sẵn.

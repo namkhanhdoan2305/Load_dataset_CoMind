@@ -124,4 +124,30 @@ for rid in select_sessions(2):
 
 Trước khi mở rộng 30 phiên, xem số node/edge, ID tracking, các quan hệ dự đoán và thời gian mỗi chunk. Phiên hoàn tất SGG sẽ có `complete: true` ở cả hai `progress.json`. `all_modalities_aligned` hiện vẫn là `false` vì còn thiếu ánh xạ cảm biến.
 
+## Dữ liệu đầu vào cho encoder belief
+
+Sau mỗi recording hoàn tất, pipeline tự xuất ba file trong `recordings/<ID>/belief_inputs/`.
+
+- `steps.jsonl.gz` chứa một bước tại mỗi mốc 0,2 giây, hai graph quan sát, sự kiện lời nói mới và ID ngữ cảnh gần đây.
+- `speech_events.json` chứa transcript segment hoàn tất, `event_id` ổn định, start/end, nguồn audio và text. Segment được phát một lần tại bước đầu tiên có `time_s >= available_s`. Ngữ cảnh 10 giây giữ tham chiếu, bộ nhớ belief của encoder phải được truyền qua các bước. Dữ liệu giữ văn bản để có thể thay text encoder sau này.
+- `manifest.json` ghi số bước, số sự kiện, hash và tình trạng nhãn/đồng bộ. `gaze_features` và `hand_features` hiện là null vì timestamp cảm biến chưa được ánh xạ. Graph quan sát human chưa có ý nghĩa là nhãn belief.
+
+Nếu đã có graph và chỉ cần xuất định dạng đầu vào mới, chạy lệnh CPU sau với ID recording thực tế.
+
+```python
+!python belief_data.py /content/drive/MyDrive/CoMind/recordings/RECORDING_ID
+```
+
+Nhãn belief được cung cấp riêng tại `recordings/<ID>/labels/belief_labels.jsonl`, mỗi dòng một truy vấn được gán nhãn độc lập. Schema gồm `time_s`, `person_id`, `object_id`, `candidate_location_ids`, `allowed_location_ids`, `label_source`. Thời điểm nhãn phải khớp graph xuất. Tập allowed là vị trí được nhãn hỗ trợ, có thể gồm nhiều vị trí khi chỉ biết vật đã rời vị trí cũ. Người gán nhãn cần đối chiếu ID đồ vật và vị trí của từng view.
+
+```python
+from belief_data import iter_training_steps
+for inputs, labeled_queries in iter_training_steps(recording_directory):
+    # Truyền recurrent state theo thứ tự inputs['time_s'].
+    # Tính loss tại labeled_queries; bước không có nhãn vẫn cập nhật state.
+    pass
+```
+
+Loader giữ nhãn ngoài inputs và dừng nếu chưa có nhãn hoặc thời điểm không khớp. Pipeline chưa cung cấp bộ nhãn belief tự động. Hai nguồn audio có thể thu cùng một lời nói; provenance được giữ để kiểm tra tương quan trước khi dùng làm bằng chứng độc lập. Bản đầu phát toàn bộ segment sau khi segment kết thúc; phân tích mệnh đề tăng dần là bước phát triển tiếp.
+
 Nguồn model [Grounding DINO](https://github.com/IDEA-Research/GroundingDINO), [SAM2](https://github.com/facebookresearch/sam2), [RelateAnything](https://github.com/Maelic/RelateAnything). Dữ liệu và đồng bộ do tác giả mô tả tại [CoMind](https://comind.ethz.ch/) và [paper, phần 3.3](https://arxiv.org/html/2607.06691v1#S3.SS3).
