@@ -66,10 +66,12 @@ class GraphStreamTests(unittest.TestCase):
         plan = [{"url_id": rid, "dest_subpath": f"recordings/{rid}", "raw": b"{}",
                  "hash_algorithm": "sha256", "files": [{"path": k, "size": 100, "hash": k} for k in paths]}
                 for rid in ids]
+        budget_stop = None
         def extract(video, folder, settings, digest, view, model, deadline):
-            if folder.parents[1].name == failed:
+            rid = folder.parents[1].name
+            if rid == failed:
                 raise ValueError("recording decode error")
-            return {"complete": True}
+            return {"complete": rid != budget_stop}
         def export(recording):
             return {"all_modalities_aligned": recording.name != unresolved,
                     "timed_model_inputs_aligned": recording.name != unresolved}
@@ -86,12 +88,20 @@ class GraphStreamTests(unittest.TestCase):
             stack.enter_context(mock.patch.object(pipeline, "extract_view", side_effect=extract))
             stack.enter_context(mock.patch.object(pipeline, "link_graph_views"))
             stack.enter_context(mock.patch("belief_data.export_recording", side_effect=export))
-            pipeline.main(["--sessions", "55", "--target", str(target),
-                           "--work-dir", str(self.root / "work")])
+            args = ["--sessions", "55", "--target", str(target), "--work-dir", str(self.root / "work")]
+            budget_stop = ids[8]
+            pipeline.main(args)
+            saved = json.loads((target / "sgg-status.json").read_text())
+            self.assertEqual(saved["state"], "budget_reached")
+            self.assertEqual(saved["pending"], ids[8:])
+            self.assertEqual(saved["completed"], [rid for rid in ids[:8] if rid != failed])
+            budget_stop = None
+            pipeline.main(args)
         status = json.loads((target / "sgg-status.json").read_text())
         self.assertEqual(status["recordings"], ids)
         self.assertEqual(status["completed"], [rid for rid in ids if rid != failed])
         self.assertEqual(status["state"], "complete_with_issues")
+        self.assertEqual(status["pending"], [])
         self.assertEqual(status["failed"][failed]["error"], "recording decode error")
         self.assertEqual(status["failed"][failed]["stage"], "graph")
         self.assertIn(unresolved, status["needs_review"])
@@ -118,6 +128,37 @@ class GraphStreamTests(unittest.TestCase):
         calls = model.calls
         self.extract("session_one", "leader", model)
         self.assertEqual(model.calls, calls)
+
+    def test_missing_graph_sample_leaves_previous_chunk_available_for_resume(self):
+        model = FakePerception()
+        def drop_sample(*args):
+            rows, carry, next_id = original(*args)
+            return [row for row in rows if row["sample_index"] != 25], carry, next_id
+        original = model.chunk
+        with mock.patch.object(model, "chunk", side_effect=drop_sample):
+            with self.assertRaisesRegex(ValueError, "chunk 2: expected graph samples"):
+                self.extract("session_one", "leader", model)
+        folder = self.root / "recordings/session_one/graphs/leader"
+        status = json.loads((folder / "progress.json").read_text())
+        self.assertFalse(status["complete"])
+        self.assertEqual(status["graph_count"], 21)
+        model = FakePerception()
+        resumed = self.extract("session_one", "leader", model)
+        self.assertEqual(model.calls, 1)
+        self.assertEqual(resumed["graph_count"], resumed["expected_graph_count"])
+        self.assertEqual(resumed["graph_count"], 41)
+
+    def test_saved_pair_with_a_shared_missing_step_is_rejected(self):
+        rid = "session_one"
+        for view in ("leader", "helper"):
+            self.extract(rid, view, FakePerception())
+            path = self.root / "recordings" / rid / "graphs" / view / "graphs.jsonl.gz"
+            with gzip.open(path, "rt") as f:
+                rows = f.readlines()
+            with gzip.open(path, "wt") as f:
+                f.writelines(rows[:1] + rows[2:])
+        with self.assertRaisesRegex(ValueError, "Missing graph grid step 1"):
+            pipeline.link_graph_views(self.root, rid)
 
     def test_uncommitted_append_recovers_without_duplicate_times(self):
         folder = self.root / "graphs"

@@ -105,6 +105,9 @@ def link_graph_views(target, rid):
             pts_verified = pts_verified and a.get("pts_verified", False) and b.get("pts_verified", False)
             if a_us != b_us or delta_us > 1000:
                 raise ValueError("Paired graph timestamps disagree; keep videos for inspection")
+            expected_us = round(count * 1_000_000 / DEFAULT_SETTINGS["graph_fps"])
+            if a_us != expected_us:
+                raise ValueError(f"Missing graph grid step {count}: expected {expected_us}us, got {a_us}us")
             elapsed_words = []
             while next_word < len(words) and words[next_word]["available_us"] <= a_us:
                 elapsed_words.append(words[next_word])
@@ -118,6 +121,12 @@ def link_graph_views(target, rid):
                                      "completed_transcript_words": elapsed_words,
                                      "sensor_alignment": "metadata_clock_mapped" if mapping_verified else "unresolved"}) + "\n")
             count += 1
+    for view in ("leader", "helper"):
+        view_folder = folder / "graphs" / view
+        progress = json.loads((view_folder / "progress.json").read_text())
+        expected = verify_complete_graph_count(progress, DEFAULT_SETTINGS, view_folder)
+        if not progress["complete"] or count != expected:
+            raise ValueError(f"Incomplete paired graph coverage for {view}: {count}/{expected} rows")
     os.replace(temporary, folder / "graphs/timeline.jsonl.gz")
     sync_path = folder / "sync-status.json"
     if sync_path.exists():
@@ -146,6 +155,16 @@ def verify_rows(rows, previous_time=-1):
             if edge["subject"] not in ids or edge["object"] not in ids:
                 raise ValueError("Relation references a missing node")
     return previous_time
+
+
+def verify_complete_graph_count(progress, settings, folder):
+    samples = math.floor((progress["source_frame_count"] - 1) * settings["tracking_fps"]
+                         / progress["source_fps"]) + 1
+    stride = settings["tracking_fps"] // settings["graph_fps"]
+    expected = (samples - 1) // stride + 1
+    if progress["graph_count"] != expected:
+        raise ValueError(f"Incomplete graph coverage in {folder}: {progress['graph_count']}/{expected} rows")
+    return expected
 
 
 def recover_stream(folder, identity):
@@ -274,6 +293,7 @@ def extract_view(video, folder, settings, video_hash, view, model, deadline,
     identity = fingerprint({"settings": settings, "video_hash": video_hash, "view": view})
     progress = recover_stream(folder, identity)
     if progress["complete"]:
+        verify_complete_graph_count(progress, settings, folder)
         return progress
     reader = reader_class(video, settings["tracking_fps"])
     step = settings["tracking_fps"] * settings["chunk_seconds"]
@@ -283,6 +303,11 @@ def extract_view(video, folder, settings, video_hash, view, model, deadline,
           f"{chunks} chunks, resuming chunk {progress['next_chunk'] + 1}", flush=True)
     stride = settings["tracking_fps"] // settings["graph_fps"]
     try:
+        committed_chunks = progress["next_chunk"]
+        if committed_chunks:
+            last_sample = min(committed_chunks * step, reader.samples - 1)
+            if committed_chunks > chunks or progress["graph_count"] != last_sample // stride + 1:
+                raise ValueError(f"Incomplete graph coverage in saved checkpoint: {folder}")
         while progress["next_chunk"] < chunks:
             if time.monotonic() >= deadline:
                 return progress
@@ -296,6 +321,12 @@ def extract_view(video, folder, settings, video_hash, view, model, deadline,
                       f"in {time.monotonic() - chunk_started:.1f}s", flush=True)
                 rows, carry, next_id = model.chunk(
                     temporary, times, view, progress["carry"], progress["next_id"], stride)
+                if index:
+                    rows = [row for row in rows if row["sample_index"] != start]
+                expected = [i for i in range(start + bool(index), end + 1) if i % stride == 0]
+                actual = [row["sample_index"] for row in rows]
+                if actual != expected:
+                    raise ValueError(f"{view} chunk {index + 1}: expected graph samples {expected}, got {actual}")
                 for row in rows:
                     sample = next(t for t in times if t["sample_index"] == row["sample_index"])
                     row.update(recording_clock="synced_mp4_relative_seconds",
@@ -314,8 +345,10 @@ def extract_view(video, folder, settings, video_hash, view, model, deadline,
                   f"chunk took {time.monotonic() - chunk_started:.1f}s", flush=True)
         if progress["node_count"] == 0 or progress["edge_count"] == 0:
             raise RuntimeError(f"No usable object/relation output in {folder}; keep source video for inspection")
-        progress.update(complete=True, source_fps=reader.fps, source_frame_count=reader.frames,
+        progress.update(source_fps=reader.fps, source_frame_count=reader.frames,
                         timestamp_basis="Canonical session grid; source_pts_us from decoder, CFR validated")
+        progress["expected_graph_count"] = verify_complete_graph_count(progress, settings, folder)
+        progress["complete"] = True
         if source.file_digest(Path(folder) / "graphs.jsonl.gz") != progress["sha256"]:
             raise RuntimeError(f"Final graph stream hash verification failed: {folder}")
         download.write_json_atomic(Path(folder) / "progress.json",
@@ -336,6 +369,12 @@ def resolved_settings(target):
     settings = json.loads(json.dumps(DEFAULT_SETTINGS))
     download.write_json_atomic(path, settings)
     return settings
+
+
+def write_batch_status(path, status):
+    resolved = set(status["completed"]) | set(status["failed"])
+    status["pending"] = [rid for rid in status["recordings"] if rid not in resolved]
+    download.write_json_atomic(path, status)
 
 
 def main(argv=None):
@@ -379,13 +418,13 @@ def main(argv=None):
     status = {"recordings": ids, "source_split": "train", "seed": args.seed,
               "completed": [], "failed": {}, "needs_review": {}, "state": "running", "current": None}
     report = target / "sgg-status.json"
-    download.write_json_atomic(report, status)
+    write_batch_status(report, status)
     source_root = Path(args.source_dir).resolve()
     try:
         plan = download.make_plan(ids, allow_missing=True, failures=status["failed"])
         if time.monotonic() >= deadline:
             status["state"] = "budget_reached"
-            download.write_json_atomic(report, status)
+            write_batch_status(report, status)
             return
         settings = resolved_settings(target)
         from reactpp_models import Perception
@@ -397,7 +436,7 @@ def main(argv=None):
             rid = man["url_id"]
             is_annotation = rid == "annotations"
             status["current"] = {"recording_id": rid, "view": None, "stage": "source_files"}
-            download.write_json_atomic(report, status)
+            write_batch_status(report, status)
             try:
                 entries = {e["path"]: e for e in man["files"]}
                 metadata_folder = target / ("annotations" if is_annotation else f"metadata/{man['url_id']}")
@@ -411,7 +450,7 @@ def main(argv=None):
                         continue
                     if time.monotonic() >= deadline:
                         status["state"] = "budget_reached"
-                        download.write_json_atomic(report, status)
+                        write_batch_status(report, status)
                         return
                     dest = download.grouped_destination(target, man, entry)
                     download.adopt_existing(target / man["dest_subpath"] / entry["path"],
@@ -423,22 +462,23 @@ def main(argv=None):
                 if not set(video_paths.values()).issubset(entries):
                     raise ValueError(f"Missing required paired videos: {man['url_id']}")
                 status["current"]["stage"] = "sensor_clock"
-                download.write_json_atomic(report, status)
+                write_batch_status(report, status)
                 from sensor_sync import prepare_clock
                 clock = prepare_clock(target / "recordings" / rid, man, allow_unresolved=True)
                 write_sync_report(target, rid)
                 for view, path in video_paths.items():
                     if time.monotonic() >= deadline:
                         status["state"] = "budget_reached"
-                        download.write_json_atomic(report, status)
+                        write_batch_status(report, status)
                         return
                     status["current"] = {"recording_id": rid, "view": view, "stage": "graph"}
-                    download.write_json_atomic(report, status)
+                    write_batch_status(report, status)
                     entry = entries[path]
                     output = target / "recordings" / man["url_id"] / "graphs" / view
                     identity = fingerprint({"settings": settings, "video_hash": entry["hash"], "view": view})
                     progress = recover_stream(output, identity)
                     if progress["complete"]:
+                        verify_complete_graph_count(progress, settings, output)
                         print(f"VERIFIED existing graph {output}", flush=True)
                         continue
                     existing = download.grouped_destination(target, man, entry)
@@ -459,10 +499,10 @@ def main(argv=None):
                     progress = extract_view(video, output, settings, entry["hash"], view, model, deadline)
                     if not progress["complete"]:
                         status["state"] = "budget_reached"
-                        download.write_json_atomic(report, status)
+                        write_batch_status(report, status)
                         return
                 status["current"] = {"recording_id": rid, "view": None, "stage": "export"}
-                download.write_json_atomic(report, status)
+                write_batch_status(report, status)
                 link_graph_views(target, rid)
                 from belief_data import export_recording
                 exported = export_recording(target / "recordings" / rid)
@@ -478,7 +518,6 @@ def main(argv=None):
                     if candidate.is_file() and not args.keep_videos:
                         candidate.unlink()
                 status["completed"].append(rid)
-                download.write_json_atomic(report, status)
             except Exception as exc:
                 if (is_annotation or isinstance(exc, (MemoryError, PermissionError))
                         or isinstance(exc, OSError) and exc.errno == errno.ENOSPC):
@@ -488,14 +527,14 @@ def main(argv=None):
                     "error_type": type(exc).__name__, "error": str(exc),
                 }
                 print(f"FAILED {rid} ({status['current']['stage']}): {exc}", flush=True)
-                download.write_json_atomic(report, status)
-        issues = status["failed"] or status["needs_review"]
+            write_batch_status(report, status)
+        issues = status["failed"] or status["needs_review"] or len(status["completed"]) != len(ids)
         status.update(state="complete_with_issues" if issues else "complete", current=None)
-        download.write_json_atomic(report, status)
+        write_batch_status(report, status)
     except BaseException as exc:
         status.update(state="interrupted" if isinstance(exc, KeyboardInterrupt) else "failed",
                       error_type=type(exc).__name__, error=str(exc))
-        download.write_json_atomic(report, status)
+        write_batch_status(report, status)
         raise
     print(f"Completed {len(status['completed'])}/{len(ids)} recordings. "
           f"Needs review: {len(status['needs_review'])}. Failed: {len(status['failed'])}. "
