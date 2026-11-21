@@ -211,14 +211,14 @@ def verify_anchors(info, first, last):
             "first_tolerance_ns": 1000, "end_tolerance_ns": tolerance}
 
 
-def prepare_clock(recording, manifest, base_url=source.DEFAULT_BASE_URL):
-    """Independent of model inference: can retrofit clock metadata to existing graphs."""
+def prepare_clock(recording, manifest, base_url=source.DEFAULT_BASE_URL, *, allow_unresolved=False):
+    """Verify the clock, or record unavailable sensor alignment for a batch export."""
     recording = Path(recording)
     rid = recording.name
     raw = json.loads(manifest["raw"])
     entries = {row["path"]: row for row in raw["files"]}
     paths = {"mp4": "mp4s/leader_trimmed_sync.mp4", "vrs": "trimmed_vrs/leader_trimmed.vrs"}
-    selected = {key: entries[path] for key, path in paths.items()}
+    selected = {key: entries[path] for key, path in paths.items() if path in entries}
     if manifest["hash_algorithm"] != "sha256":
         raise ValueError("Sensor clock profile requires SHA256 source manifests")
     sensor_paths = {"gaze": "mps_leader_trimmed_vrs/eye_gaze/general_eye_gaze.csv",
@@ -243,11 +243,18 @@ def prepare_clock(recording, manifest, base_url=source.DEFAULT_BASE_URL):
     readers = {key: RangeReader(source.build_url(base_url, rid, paths[key]), row["size"],
                                 max_bytes=32 * 2**20 if key == "mp4" else 4 * 2**20)
                for key, row in selected.items()}
-    info = read_mp4_clock(readers["mp4"])
-    first, last = vrs_rgb_bounds(readers["vrs"], info["origin_device_ns"], info["last_frame_time_ns"])
-    proof = verify_anchors(info, first, last)
+    info, proof, error = {}, None, None
+    try:
+        info = read_mp4_clock(readers["mp4"])
+        first, last = vrs_rgb_bounds(readers["vrs"], info["origin_device_ns"], info["last_frame_time_ns"])
+        proof = verify_anchors(info, first, last)
+    except (OSError, ValueError, KeyError, struct.error) as exc:
+        if not allow_unresolved:
+            raise
+        error = f"{type(exc).__name__}: {exc}"
     mapping = {"schema_version": 1, "profile": PROFILE, "recording_id": rid,
-               "status": "verified_metadata_anchors", "clock_id": clock_id(rid),
+               "status": "unresolved" if error else "verified_metadata_anchors",
+               "clock_id": clock_id(rid),
                "device_clock_id": f"comind:{rid}:leader_device_time", "video": info,
                "source_paths": paths, "source_hashes": {k: row["hash"] for k, row in selected.items()},
                "source_sensor_sha256": sensor_hashes,
@@ -255,12 +262,18 @@ def prepare_clock(recording, manifest, base_url=source.DEFAULT_BASE_URL):
                "hash_algorithm": manifest["hash_algorithm"], "anchor_checks": proof,
                "metadata_bytes_read": {k: r.bytes_read for k, r in readers.items()},
                "physical_audio_video_alignment_verified": False,
-               "basis": "MP4 description nanoseconds; verified RGB first/last VRS record anchors. "
-                        "Scalar map uses 1e9 device nanoseconds per MP4 second; CFR resampling tolerance is reported."}
+               "basis": ("Sensor timestamps remain in their source clock." if error else
+                         "MP4 description nanoseconds; verified RGB first/last VRS record anchors. "
+                         "Scalar map uses 1e9 device nanoseconds per MP4 second; CFR resampling tolerance is reported.")}
+    if error:
+        mapping["error"] = error
     recording.mkdir(parents=True, exist_ok=True)
     write_json_atomic(path, mapping)
-    print(f"{rid}: sensor clock verified, origin={info['origin_device_ns']}ns, "
-          f"end anchor error={proof['last_anchor_error_ns'] / 1e6:.3f}ms", flush=True)
+    if error:
+        print(f"{rid}: sensor clock unresolved; retaining raw CSVs and masking sensor features: {error}", flush=True)
+    else:
+        print(f"{rid}: sensor clock verified, origin={info['origin_device_ns']}ns, "
+              f"end anchor error={proof['last_anchor_error_ns'] / 1e6:.3f}ms", flush=True)
     return mapping
 
 
@@ -347,23 +360,31 @@ class SensorAligner:
         self.recording = Path(recording)
         path = self.recording / "sensor-clock.json"
         self.mapping = json.loads(path.read_text()) if path.exists() else None
+        self.video = {}
         self.samplers, self.stats, self.source_hashes = {}, {}, {}
+        sources = [("gaze", "leader_gaze/general_eye_gaze.csv", JOIN_POLICY["gaze_max_age_us"]),
+                   ("hands", "leader_hands/hand_tracking_results.csv", JOIN_POLICY["hand_max_age_us"])]
+        for name, file, _ in sources:
+            self.stats[name] = {"present": (self.recording / file).is_file(), "matched": 0, "valid": 0,
+                                "missing": 0, "max_age_ns": None, "missing_reasons": {}}
         if self.mapping is None:
             return
-        if (self.mapping.get("status") != "verified_metadata_anchors" or self.mapping.get("profile") != PROFILE
+        if (self.mapping.get("profile") != PROFILE
                 or self.mapping.get("recording_id") != self.recording.name
                 or self.mapping.get("clock_id") != clock_id(self.recording.name)
                 or not isinstance(self.mapping.get("source_sensor_sha256"), dict)):
             raise ValueError("Unverified or wrong-recording sensor clock mapping")
+        self.video = self.mapping.get("video") or {}
+        if self.mapping.get("status") == "unresolved":
+            self.mapping = None
+            return
+        if self.mapping.get("status") != "verified_metadata_anchors":
+            raise ValueError("Unknown sensor clock mapping status")
         proof = self.mapping["anchor_checks"]
         verify_anchors(self.mapping["video"], proof["first_rgb_device_ns"], proof["last_rgb_device_ns"])
-        for name, group, file, age in [
-                ("gaze", "leader_gaze", "general_eye_gaze.csv", JOIN_POLICY["gaze_max_age_us"]),
-                ("hands", "leader_hands", "hand_tracking_results.csv", JOIN_POLICY["hand_max_age_us"])]:
-            csv_path = self.recording / group / file
-            self.stats[name] = {"present": csv_path.exists(), "matched": 0, "valid": 0,
-                                "missing": 0, "max_age_ns": None, "missing_reasons": {}}
-            if csv_path.exists():
+        for name, file, age in sources:
+            csv_path = self.recording / file
+            if self.stats[name]["present"]:
                 self.source_hashes[name] = source.file_digest(csv_path)
                 if self.source_hashes[name] != self.mapping["source_sensor_sha256"].get(name):
                     self.close()
@@ -376,6 +397,10 @@ class SensorAligner:
 
     def attach(self, human_graph, step_time_us):
         if self.mapping is None:
+            for stats in self.stats.values():
+                stats["missing"] += 1
+                reason = "clock_unresolved" if stats["present"] else "source_modality_missing"
+                stats["missing_reasons"][reason] = stats["missing"]
             return None, None
         if human_graph.get("source_video_sha256") != self.mapping["source_hashes"]["mp4"]:
             raise ValueError("Sensor clock source hash differs from the leader graph's MP4")
@@ -410,7 +435,7 @@ class SensorAligner:
 
     def report(self):
         return {"clock_mapping_verified": self.mapping is not None,
-                "all_sensor_sources_present": len(self.samplers) == 2,
+                "all_sensor_sources_present": all(stats["present"] for stats in self.stats.values()),
                 "join_policy": JOIN_POLICY, "modalities": self.stats, "source_csv_sha256": self.source_hashes,
                 "clock_mapping_sha256": source.file_digest(self.recording / "sensor-clock.json") if self.mapping else None,
                 "note": "Missing/stale samples stay null; invalid hands are masked, no forward fill of valid pose. "

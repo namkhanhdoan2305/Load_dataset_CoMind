@@ -2,6 +2,7 @@
 
 import argparse
 import csv
+import errno
 import gzip
 import hashlib
 import json
@@ -367,107 +368,138 @@ def main(argv=None):
                 parser.error("Choose a T4 runtime and install the GPU ONNX Runtime in requirements.txt")
         except ImportError:
             parser.error("Install requirements.txt in the Colab GPU runtime first")
-    plan = download.make_plan(ids, allow_missing=True, show_files=args.dry_run)
     if args.dry_run:
+        download.make_plan(ids, allow_missing=True, show_files=True)
         print("Settings: REACT++ YOLO12m ONNX + bbox tracker, graph/tracking 5 FPS, 4-second chunks")
         return
+    deadline = time.monotonic() + args.max_hours * 3600
     target.mkdir(parents=True, exist_ok=True)
     source.write_split_files(str(target))
     work.mkdir(parents=True, exist_ok=True)
-    deadline = time.monotonic() + args.max_hours * 3600
-    settings = resolved_settings(target)
-    from reactpp_models import Perception
-    model = Perception(settings)  # Check models/runtime before any large payload transfer.
-    download.write_json_atomic(target / "reactpp-model-info.json", model.info)
-    video_paths = {"leader": download.GROUPS["leader_video"][0],
-                   "helper": download.GROUPS["helper_video"][0]}
     status = {"recordings": ids, "source_split": "train", "seed": args.seed,
-              "completed": [], "state": "running", "current": None}
+              "completed": [], "failed": {}, "needs_review": {}, "state": "running", "current": None}
     report = target / "sgg-status.json"
     download.write_json_atomic(report, status)
+    source_root = Path(args.source_dir).resolve()
     try:
-        # Persist only the non-video modalities on Drive, using the six-group layout.
-        for man in plan:
-            entries = {e["path"]: e for e in man["files"]}
-            is_annotation = man["url_id"] == "annotations"
-            metadata_folder = target / ("annotations" if is_annotation else f"metadata/{man['url_id']}")
-            metadata_folder.mkdir(parents=True, exist_ok=True)
-            (metadata_folder / "source-healthcheck.json").write_bytes(man["raw"])
-            download.write_json_atomic(metadata_folder / "selection.json", {
-                "files": man["files"], "missing_modalities": man.get("missing_modalities", []),
-                "missing_files": man.get("missing_files", [])})
-            for entry in man["files"]:
-                if entry["path"] in video_paths.values():
-                    continue
-                if time.monotonic() >= deadline:
-                    status["state"] = "budget_reached"
-                    download.write_json_atomic(report, status)
-                    return
-                dest = download.grouped_destination(target, man, entry)
-                download.adopt_existing(target / man["dest_subpath"] / entry["path"],
-                                        dest, entry, man["hash_algorithm"])
-                download.download_verified(man, entry, dest, source.DEFAULT_BASE_URL)
-            if is_annotation:
-                download.split_annotations(plan, target)
-                continue
-            if not set(video_paths.values()).issubset(entries):
-                raise ValueError(f"Missing required paired videos: {man['url_id']}")
-            from sensor_sync import prepare_clock
-            prepare_clock(target / "recordings" / man["url_id"], man)
-            write_sync_report(target, man["url_id"])
-            for view, path in video_paths.items():
-                if time.monotonic() >= deadline:
-                    status["state"] = "budget_reached"
-                    download.write_json_atomic(report, status)
-                    return
-                status["current"] = {"recording_id": man["url_id"], "view": view}
-                download.write_json_atomic(report, status)
-                entry = entries[path]
-                output = target / "recordings" / man["url_id"] / "graphs" / view
-                identity = fingerprint({"settings": settings, "video_hash": entry["hash"], "view": view})
-                progress = recover_stream(output, identity)
-                if progress["complete"]:
-                    print(f"VERIFIED existing graph {output}", flush=True)
-                    continue
-                existing = download.grouped_destination(target, man, entry)
-                old = target / man["dest_subpath"] / path
-                source_root = Path(args.source_dir).resolve()
-                prior_grouped = download.grouped_destination(source_root, man, entry)
-                prior_old = source_root / man["dest_subpath"] / path
-                video = work / man["url_id"] / path
-                persistent = next((p for p in (existing, old, prior_grouped, prior_old) if p.is_file()
-                                   and p.stat().st_size == entry["size"]
-                                   and source.file_digest(p, man["hash_algorithm"]) == entry["hash"]), None)
-                if persistent is not None:
-                    video = persistent
-                else:
-                    free = source.free_space_bytes(work)
-                    if free is not None and free < entry["size"] + 2 * 2**30:
-                        raise RuntimeError("Insufficient Colab temporary disk")
-                    download.download_verified(man, entry, video, source.DEFAULT_BASE_URL)
-                progress = extract_view(video, output, settings, entry["hash"], view, model, deadline)
-                if not progress["complete"]:
-                    status["state"] = "budget_reached"
-                    download.write_json_atomic(report, status)
-                    return
-            link_graph_views(target, man["url_id"])
-            from belief_data import export_recording
-            export_recording(target / "recordings" / man["url_id"])
-            # Both view streams and their timestamp pairing passed checks before cleanup.
-            for view, path in video_paths.items():
-                candidate = work / man["url_id"] / path
-                if candidate.is_file() and not args.keep_videos:
-                    candidate.unlink()
-            status["completed"].append(man["url_id"])
+        plan = download.make_plan(ids, allow_missing=True, failures=status["failed"])
+        if time.monotonic() >= deadline:
+            status["state"] = "budget_reached"
             download.write_json_atomic(report, status)
-        status.update(state="complete", current=None)
+            return
+        settings = resolved_settings(target)
+        from reactpp_models import Perception
+        model = Perception(settings)  # Check models/runtime before any large payload transfer.
+        download.write_json_atomic(target / "reactpp-model-info.json", model.info)
+        video_paths = {"leader": download.GROUPS["leader_video"][0],
+                       "helper": download.GROUPS["helper_video"][0]}
+        for man in plan:
+            rid = man["url_id"]
+            is_annotation = rid == "annotations"
+            status["current"] = {"recording_id": rid, "view": None, "stage": "source_files"}
+            download.write_json_atomic(report, status)
+            try:
+                entries = {e["path"]: e for e in man["files"]}
+                metadata_folder = target / ("annotations" if is_annotation else f"metadata/{man['url_id']}")
+                metadata_folder.mkdir(parents=True, exist_ok=True)
+                (metadata_folder / "source-healthcheck.json").write_bytes(man["raw"])
+                download.write_json_atomic(metadata_folder / "selection.json", {
+                    "files": man["files"], "missing_modalities": man.get("missing_modalities", []),
+                    "missing_files": man.get("missing_files", [])})
+                for entry in man["files"]:
+                    if entry["path"] in video_paths.values():
+                        continue
+                    if time.monotonic() >= deadline:
+                        status["state"] = "budget_reached"
+                        download.write_json_atomic(report, status)
+                        return
+                    dest = download.grouped_destination(target, man, entry)
+                    download.adopt_existing(target / man["dest_subpath"] / entry["path"],
+                                            dest, entry, man["hash_algorithm"])
+                    download.download_verified(man, entry, dest, source.DEFAULT_BASE_URL)
+                if is_annotation:
+                    download.split_annotations(plan, target)
+                    continue
+                if not set(video_paths.values()).issubset(entries):
+                    raise ValueError(f"Missing required paired videos: {man['url_id']}")
+                status["current"]["stage"] = "sensor_clock"
+                download.write_json_atomic(report, status)
+                from sensor_sync import prepare_clock
+                clock = prepare_clock(target / "recordings" / rid, man, allow_unresolved=True)
+                write_sync_report(target, rid)
+                for view, path in video_paths.items():
+                    if time.monotonic() >= deadline:
+                        status["state"] = "budget_reached"
+                        download.write_json_atomic(report, status)
+                        return
+                    status["current"] = {"recording_id": rid, "view": view, "stage": "graph"}
+                    download.write_json_atomic(report, status)
+                    entry = entries[path]
+                    output = target / "recordings" / man["url_id"] / "graphs" / view
+                    identity = fingerprint({"settings": settings, "video_hash": entry["hash"], "view": view})
+                    progress = recover_stream(output, identity)
+                    if progress["complete"]:
+                        print(f"VERIFIED existing graph {output}", flush=True)
+                        continue
+                    existing = download.grouped_destination(target, man, entry)
+                    old = target / man["dest_subpath"] / path
+                    prior_grouped = download.grouped_destination(source_root, man, entry)
+                    prior_old = source_root / man["dest_subpath"] / path
+                    video = work / man["url_id"] / path
+                    persistent = next((p for p in (existing, old, prior_grouped, prior_old) if p.is_file()
+                                       and p.stat().st_size == entry["size"]
+                                       and source.file_digest(p, man["hash_algorithm"]) == entry["hash"]), None)
+                    if persistent is not None:
+                        video = persistent
+                    else:
+                        free = source.free_space_bytes(work)
+                        if free is not None and free < entry["size"] + 2 * 2**30:
+                            raise OSError(errno.ENOSPC, "Insufficient temporary disk", str(work))
+                        download.download_verified(man, entry, video, source.DEFAULT_BASE_URL)
+                    progress = extract_view(video, output, settings, entry["hash"], view, model, deadline)
+                    if not progress["complete"]:
+                        status["state"] = "budget_reached"
+                        download.write_json_atomic(report, status)
+                        return
+                status["current"] = {"recording_id": rid, "view": None, "stage": "export"}
+                download.write_json_atomic(report, status)
+                link_graph_views(target, rid)
+                from belief_data import export_recording
+                exported = export_recording(target / "recordings" / rid)
+                if not exported["all_modalities_aligned"]:
+                    status["needs_review"][rid] = {
+                        "timed_model_inputs_aligned": exported["timed_model_inputs_aligned"],
+                        "sensor_clock_error": clock.get("error"),
+                        "missing_files": man.get("missing_files", []),
+                    }
+                # Both view streams and their timestamp pairing passed checks before cleanup.
+                for view, path in video_paths.items():
+                    candidate = work / man["url_id"] / path
+                    if candidate.is_file() and not args.keep_videos:
+                        candidate.unlink()
+                status["completed"].append(rid)
+                download.write_json_atomic(report, status)
+            except Exception as exc:
+                if (is_annotation or isinstance(exc, (MemoryError, PermissionError))
+                        or isinstance(exc, OSError) and exc.errno == errno.ENOSPC):
+                    raise
+                status["failed"][rid] = {
+                    "stage": status["current"]["stage"], "view": status["current"]["view"],
+                    "error_type": type(exc).__name__, "error": str(exc),
+                }
+                print(f"FAILED {rid} ({status['current']['stage']}): {exc}", flush=True)
+                download.write_json_atomic(report, status)
+        issues = status["failed"] or status["needs_review"]
+        status.update(state="complete_with_issues" if issues else "complete", current=None)
         download.write_json_atomic(report, status)
     except BaseException as exc:
         status.update(state="interrupted" if isinstance(exc, KeyboardInterrupt) else "failed",
-                      error_type=type(exc).__name__)
+                      error_type=type(exc).__name__, error=str(exc))
         download.write_json_atomic(report, status)
         raise
-    print(f"Completed {len(ids)} sessions. Graphs saved under {target}/recordings/<ID>/graphs")
+    print(f"Completed {len(status['completed'])}/{len(ids)} recordings. "
+          f"Needs review: {len(status['needs_review'])}. Failed: {len(status['failed'])}. "
+          f"See {report}", flush=True)
 
 
 if __name__ == "__main__":

@@ -50,6 +50,18 @@ class ExactSelectionTests(unittest.TestCase):
         self.assertEqual(len(plan[1]["files"]), 6)
         self.assertEqual([e["path"] for e in plan[0]["files"]], downloader.ANNOTATIONS)
 
+    def test_batch_reports_bad_manifest_and_keeps_next_recording(self):
+        other = source.TRAIN_IDS[1]
+        avail = self.manifest(self.wanted, other)
+        common = self.manifest(downloader.ANNOTATIONS, "annotations")
+        failed = {}
+        with mock.patch.object(downloader, "retry", side_effect=lambda operation: operation()), \
+                mock.patch.object(source, "fetch_manifest", side_effect=[OSError("source unreachable"), avail, common]):
+            plan = downloader.make_plan([self.rid, other], failures=failed)
+        self.assertEqual([m["url_id"] for m in plan], ["annotations", other])
+        self.assertEqual(failed[self.rid]["stage"], "manifest")
+        self.assertEqual(failed[self.rid]["error"], "source unreachable")
+
     def test_gapfill_does_not_satisfy_missing_trimmed_hands(self):
         hands = downloader.GROUPS["leader_hands"][0]
         recording = self.manifest([p for p in self.wanted if p != hands] + self.extra, self.rid)

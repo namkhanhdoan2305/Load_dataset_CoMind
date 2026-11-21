@@ -12,7 +12,7 @@ from unittest import mock
 import belief_data
 import comind_source as source
 from sensor_sync import (PROFILE, RECORD, RangeReader, SensorAligner, PastSampler,
-                         gaze_values, hand_values, parse_moov, verify_anchors, vrs_rgb_bounds)
+                         gaze_values, hand_values, parse_moov, prepare_clock, verify_anchors, vrs_rgb_bounds)
 from time_contract import clock_id
 
 
@@ -231,6 +231,38 @@ class ExportIntegrationTests(unittest.TestCase):
         manifest = belief_data.export_recording(self.recording)
         self.assertFalse(manifest["all_modalities_aligned"])
         self.assertTrue(all(row["hand_features"] is None for row in self.rows()))
+
+    def test_unresolved_sensor_clock_retains_graphs_raw_sources_and_audits(self):
+        # A real failure in the full CoMind batch has a matching start and a 9.6s tail mismatch.
+        info = self.mapping["video"]
+        raw = {"files": [
+            {"path": "mp4s/leader_trimmed_sync.mp4", "size": 100, "hash": "video-sha"},
+            {"path": "trimmed_vrs/leader_trimmed.vrs", "size": 100, "hash": "vrs-sha"},
+            {"path": "mps_leader_trimmed_vrs/eye_gaze/general_eye_gaze.csv", "size": 100,
+             "hash": self.mapping["source_sensor_sha256"]["gaze"]},
+            {"path": "mps_leader_trimmed_vrs/hand_tracking/hand_tracking_results.csv", "size": 100,
+             "hash": self.mapping["source_sensor_sha256"]["hands"]},
+        ]}
+        for role, digest in self.mapping["source_transcript_sha256"].items():
+            raw["files"].append({"path": f"transcripts/{role}_trimmed_sync_transcript.json",
+                                 "size": 100, "hash": digest})
+        man = {"raw": json.dumps(raw), "hash_algorithm": "sha256"}
+        with mock.patch("sensor_sync.read_mp4_clock", return_value=info), \
+                mock.patch("sensor_sync.vrs_rgb_bounds", return_value=(ORIGIN, ORIGIN + 19_622_731_713)):
+            with self.assertRaisesRegex(ValueError, "anchors disagree"):
+                prepare_clock(self.recording, man)
+            result = prepare_clock(self.recording, man, allow_unresolved=True)
+        self.assertEqual(result["status"], "unresolved")
+        self.assertIn("anchors disagree", result["error"])
+        manifest = belief_data.export_recording(self.recording)
+        self.assertFalse(manifest["timed_model_inputs_aligned"])
+        self.assertFalse(manifest["all_modalities_aligned"])
+        self.assertTrue(manifest["all_sensor_sources_present"])
+        self.assertTrue(self.gaze_path.is_file() and self.hand_path.is_file())
+        self.assertEqual(manifest["steps"], 4)
+        self.assertTrue(all(row["gaze_features"] is None and row["hand_features"] is None for row in self.rows()))
+        speech = json.loads((belief_data.input_folder(self.recording) / "speech_alignment.json").read_text())
+        self.assertTrue(speech["source_hashes_verified"] and speech["all_speech_times_within_video"])
 
     def test_wrong_video_hash_rejects_sensor_join(self):
         self.mapping["source_hashes"]["mp4"] = "other-video"

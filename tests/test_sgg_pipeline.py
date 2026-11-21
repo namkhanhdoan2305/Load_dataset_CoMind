@@ -1,10 +1,13 @@
 """Synthetic graph-stream checks. These do not validate GPU model predictions."""
 
 import copy
+from contextlib import ExitStack, redirect_stdout
 import gzip
+import io
 import json
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 
@@ -55,6 +58,43 @@ class GraphStreamTests(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 pipeline.main([])
         plan.assert_not_called()
+
+    def test_full_batch_reaches_last_recording_after_one_fails(self):
+        ids = pipeline.select_sessions(55, 42)
+        failed, unresolved = ids[4], ids[6]
+        paths = [pipeline.download.GROUPS[role][0] for role in ("leader_video", "helper_video")]
+        plan = [{"url_id": rid, "dest_subpath": f"recordings/{rid}", "raw": b"{}",
+                 "hash_algorithm": "sha256", "files": [{"path": k, "size": 100, "hash": k} for k in paths]}
+                for rid in ids]
+        def extract(video, folder, settings, digest, view, model, deadline):
+            if folder.parents[1].name == failed:
+                raise ValueError("recording decode error")
+            return {"complete": True}
+        def export(recording):
+            return {"all_modalities_aligned": recording.name != unresolved,
+                    "timed_model_inputs_aligned": recording.name != unresolved}
+        target = self.root / "output"
+        with ExitStack() as stack:
+            stack.enter_context(redirect_stdout(io.StringIO()))
+            stack.enter_context(mock.patch.dict("sys.modules", {"onnxruntime": SimpleNamespace(
+                get_available_providers=lambda: ["CUDAExecutionProvider"])}))
+            stack.enter_context(mock.patch.object(pipeline.download, "make_plan", return_value=plan))
+            stack.enter_context(mock.patch.object(pipeline.download, "download_verified"))
+            stack.enter_context(mock.patch.object(pipeline.source, "free_space_bytes", return_value=2**40))
+            stack.enter_context(mock.patch("reactpp_models.Perception", return_value=SimpleNamespace(info={})))
+            stack.enter_context(mock.patch("sensor_sync.prepare_clock", return_value={}))
+            stack.enter_context(mock.patch.object(pipeline, "extract_view", side_effect=extract))
+            stack.enter_context(mock.patch.object(pipeline, "link_graph_views"))
+            stack.enter_context(mock.patch("belief_data.export_recording", side_effect=export))
+            pipeline.main(["--sessions", "55", "--target", str(target),
+                           "--work-dir", str(self.root / "work")])
+        status = json.loads((target / "sgg-status.json").read_text())
+        self.assertEqual(status["recordings"], ids)
+        self.assertEqual(status["completed"], [rid for rid in ids if rid != failed])
+        self.assertEqual(status["state"], "complete_with_issues")
+        self.assertEqual(status["failed"][failed]["error"], "recording decode error")
+        self.assertEqual(status["failed"][failed]["stage"], "graph")
+        self.assertIn(unresolved, status["needs_review"])
 
     def extract(self, rid, view, model, deadline=float("inf")):
         folder = self.root / "recordings" / rid / "graphs" / view

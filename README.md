@@ -58,7 +58,11 @@ Mở rộng cùng seed và target, tiếp tục các recording đã commit:
 !python -u sgg_pipeline.py --sessions 30
 ```
 
-`--sessions 50` giữ 30 phiên đầu khi seed không đổi. Chỉ chọn từ official train; ghi split, seed và UUID trong output. Ngân sách mặc định 5 giờ được kiểm tra giữa file/chunk; chạy lại cùng lệnh để tiếp tục. Source nào thiếu được báo rõ, không tạo dữ liệu thay thế.
+`--sessions 50` giữ 30 phiên đầu khi seed không đổi. `--sessions 55` chạy hết official train. Ngân sách mặc định 5 giờ tính từ lúc bắt đầu đọc manifest và được kiểm tra giữa file/chunk. Chạy lại cùng seed và đích lưu để dùng checkpoint graph đã có.
+
+`sgg-status.json` ghi thứ tự phiên, `completed` (đã xuất graph và step), `failed` (lỗi theo phiên và theo bước) và `needs_review` (đã xuất nhưng còn thiếu dữ liệu hoặc đồng bộ). Nếu mốc MP4/VRS chưa xác minh được, phiên vẫn xuất graph và lời nói, giữ CSV gốc nếu có và để gaze/hand ở `null` trong step. Hai cờ đồng bộ phản ánh phần này trong `sync-status.json`. Lỗi riêng của một recording được báo rõ và lô tiếp tục; lần chạy sau thử lại phiên đó. `complete_with_issues` nghĩa là đã đi hết danh sách nhưng vẫn có phiên cần xử lý tiếp.
+
+Trên Kaggle dùng `--target /kaggle/working/CoMind_REACTpp --work-dir /tmp/comind-sgg-work` và chừa thời gian lưu Output, ví dụ `--max-hours 11.5`. Để tiếp tục ở một version mới, gắn Output đã lưu qua Add Input và chép nguyên cây `CoMind_REACTpp` vào `/kaggle/working/` trước khi gọi pipeline.
 
 ## Mã nguồn đang dùng
 

@@ -93,12 +93,15 @@ def export_recording(recording, context_seconds=10, step_stride=1):
     if not math.isfinite(context_seconds) or context_seconds < 0:
         raise ValueError("context_seconds must be finite and nonnegative")
     streams = {}
+    leader_video = {}
     for view in ("leader", "helper"):
         path = recording / "graphs" / view / "graphs.jsonl.gz"
         progress = json.loads((path.parent / "progress.json").read_text())
         if not progress["complete"] or source.file_digest(path) != progress["sha256"]:
             raise ValueError(f"Complete, verified graphs required before export: {view}")
         streams[view] = path
+        if view == "leader" and progress.get("source_frame_count") and progress.get("source_fps"):
+            leader_video = {"frame_count": progress["source_frame_count"], "fps": progress["source_fps"]}
     folder.mkdir(parents=True, exist_ok=True)
     events = speech_events(recording)
     words, untimed_words = speech_words(recording)
@@ -121,7 +124,7 @@ def export_recording(recording, context_seconds=10, step_stride=1):
     with SensorAligner(recording) as sensors, gzip.open(streams["leader"], "rt") as leader, \
             gzip.open(streams["helper"], "rt") as helper, gzip.open(temporary, "wt") as output, \
             gzip.open(folder / "benchmark_labels.jsonl.gz.tmp", "wt") as label_output:
-        video = sensors.mapping["video"] if sensors.mapping else {}
+        video = sensors.video or leader_video
         video_duration_us = round(video["frame_count"] / video["fps"] * 1e6) if video else None
         annotations = AnnotationTimeline(recording, video.get("fps"), video_duration_us)
         while True:

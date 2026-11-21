@@ -47,8 +47,8 @@ def retry(operation, attempts=4):
             time.sleep(delay)
 
 
-def make_plan(ids, base_url=source.DEFAULT_BASE_URL, allow_missing=False, show_files=False):
-    """Read small manifests only. Never silently omit a failed recording."""
+def make_plan(ids, base_url=source.DEFAULT_BASE_URL, allow_missing=False, show_files=False, *, failures=None):
+    """Read manifests and report recording-specific failures when a batch requests it."""
     if not ids or len(ids) != len(set(ids)):
         raise ValueError("Choose a nonempty list of unique recording IDs")
     patterns = [p for group in GROUPS.values() for p in group]
@@ -56,21 +56,28 @@ def make_plan(ids, base_url=source.DEFAULT_BASE_URL, allow_missing=False, show_f
     for index, rid in enumerate(ids, 1):
         if not source.UUID_RE.fullmatch(rid):
             raise ValueError(f"Invalid recording ID: {rid!r}")
-        man = retry(lambda: source.fetch_manifest(base_url, rid, 60))
-        paths = [entry["path"] for entry in man["files"]]
-        missing_files = [pattern for pats in GROUPS.values() for pattern in pats
-                         if not any(fnmatch.fnmatchcase(path, pattern) for path in paths)]
-        missing = [name for name, pats in GROUPS.items() if any(p in missing_files for p in pats)]
-        if missing:
-            print(f"MISSING {rid}: {', '.join(missing)}", flush=True)
-            if not allow_missing:
-                raise ValueError("Missing modalities. Inspect the manifest or set "
-                                 "allow_missing=True explicitly")
-        man["missing_modalities"] = missing
-        man["missing_files"] = missing_files
-        source.filter_manifest_files([man], patterns, [])
-        if not man["files"]:
-            raise ValueError(f"No selected files for {rid}")
+        try:
+            man = retry(lambda: source.fetch_manifest(base_url, rid, 60))
+            paths = [entry["path"] for entry in man["files"]]
+            missing_files = [pattern for pats in GROUPS.values() for pattern in pats
+                             if not any(fnmatch.fnmatchcase(path, pattern) for path in paths)]
+            missing = [name for name, pats in GROUPS.items() if any(p in missing_files for p in pats)]
+            if missing:
+                print(f"MISSING {rid}: {', '.join(missing)}", flush=True)
+                if not allow_missing:
+                    raise ValueError("Missing modalities. Inspect the manifest or set "
+                                     "allow_missing=True explicitly")
+            man["missing_modalities"] = missing
+            man["missing_files"] = missing_files
+            source.filter_manifest_files([man], patterns, [])
+            if not man["files"]:
+                raise ValueError(f"No selected files for {rid}")
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            if failures is None:
+                raise
+            failures[rid] = {"stage": "manifest", "error_type": type(exc).__name__, "error": str(exc)}
+            print(f"FAILED {rid} manifest: {exc}", flush=True)
+            continue
         plan.append(man)
         print(f"[{index}/{len(ids)}] {rid}: "
               f"{man['total_size_bytes'] / 1e9:.3f} GB, "
